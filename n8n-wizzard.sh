@@ -124,7 +124,7 @@ cd "$INSTALL_DIR"
 # ==============================
 # CLONE
 # ==============================
-run_step "[4/6] Clone repo" git clone https://github.com/n8n-io/n8n-hosting.git . || true
+run_step "[4/6] Clone repo" git clone https://github.com/muh-yazid/n8n-http.git . || true
 
 # ==============================
 # GET IP
@@ -156,7 +156,7 @@ echo "[OK] .env ready"
 # ==============================
 # DOCKER RUN
 # ==============================
-run_step "[5/6] Start containers" docker compose -f docker-compose/withPostgres/docker-compose.yml up -d
+run_step "[5/6] Start containers" docker compose up -d
 
 # ==============================
 # WAIT
