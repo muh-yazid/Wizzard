@@ -65,8 +65,7 @@ echo "[OK] Docker ready"
 # ==============================
 # INPUT
 # ==============================
-read -p "Domain: " DOMAIN
-read -p "Email: " EMAIL
+read -p "Enter domain name (ex: n8n.domain.com): " DOMAIN
 
 echo "=== PostgreSQL ==="
 read -p "POSTGRES_USER: " POSTGRES_USER
