@@ -33,6 +33,19 @@ echo ""
 # ==============================
 # INSTALL DOCKER
 # ==============================
+echo "[INFO] Waiting for apt/dpkg lock..."
+
+while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+    echo "[WAIT] apt is running... retry in 5s"
+    sleep 5
+done
+
+while fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+    echo "[WAIT] apt lists lock... retry in 5s"
+    sleep 5
+done
+
+echo "[OK] apt is ready"
 run_step "[1/6] Download Docker installer" curl -fsSL https://get.docker.com -o get-docker.sh
 run_step "[2/6] Install Docker" sh get-docker.sh
 
