@@ -56,16 +56,6 @@ echo ""
 echo "[INFO] Starting installation..."
 
 # ==============================
-# INSTALL DOCKER
-# ==============================
-echo "[1/5] Installing Docker..."
-curl -fsSL https://get.docker.com/ | sh
-
-echo "[INFO] Installing dependencies..."
-apt-get update -y
-apt-get install -y git docker-compose-plugin
-
-# ==============================
 # SETUP DIRECTORY
 # ==============================
 echo "[2/5] Preparing directory..."
