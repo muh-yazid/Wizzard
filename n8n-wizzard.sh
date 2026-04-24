@@ -1,18 +1,10 @@
 #!/bin/bash
 
-# ==============================
-# SAFETY & LOGGING
-# ==============================
 set -e
 
-LOG_FILE="/var/log/install-n8n.log"
-
-# tampil ke layar + simpan log
+LOG_FILE="/var/log/n8n-full-install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-# ==============================
-# HELPER FUNCTION
-# ==============================
 run_step() {
     STEP_NAME="$1"
     shift
@@ -26,7 +18,7 @@ run_step() {
         echo "[OK] $STEP_NAME"
     else
         echo "[ERROR] $STEP_NAME"
-        echo "[INFO] Cek log: $LOG_FILE"
+        echo "[INFO] Check log: $LOG_FILE"
         exit 1
     fi
 }
@@ -34,78 +26,69 @@ run_step() {
 clear
 
 echo "----------------------------------------"
-echo "   N8N Wizard Configuration v1.0"
+echo "   N8N INSTALLER + WIZARD"
 echo "----------------------------------------"
 echo ""
 
 # ==============================
-# CONFIRMATION
+# INSTALL DOCKER
 # ==============================
-read -p "Do you want to use the configuration wizard? (y/n): " CONFIRM
+run_step "[1/6] Download Docker installer" curl -fsSL https://get.docker.com -o get-docker.sh
+run_step "[2/6] Install Docker" sh get-docker.sh
 
-if [[ "$CONFIRM" != "y" ]]; then
-  echo "[INFO] Wizard cancelled."
-  exit 0
-fi
-
-echo ""
+echo "[...] Starting Docker service"
+systemctl start docker || service docker start || true
+sleep 3
+echo "[OK] Docker ready"
 
 # ==============================
-# USER INPUT
+# WIZARD CONFIRM
 # ==============================
-read -p "Enter domain name (ex: n8n.domain.com): " DOMAIN
-read -p "Enter email address: " EMAIL
+read -p "Start configuration wizard? (y/n): " CONFIRM
+[[ "$CONFIRM" != "y" ]] && echo "Cancelled." && exit 0
 
-echo ""
-echo "=== PostgreSQL Configuration ==="
+# ==============================
+# INPUT
+# ==============================
+read -p "Domain: " DOMAIN
+read -p "Email: " EMAIL
 
+echo "=== PostgreSQL ==="
 read -p "POSTGRES_USER: " POSTGRES_USER
-read -s -p "POSTGRES_PASSWORD: " POSTGRES_PASSWORD
-echo ""
+read -s -p "POSTGRES_PASSWORD: " POSTGRES_PASSWORD; echo ""
 read -p "POSTGRES_DB: " POSTGRES_DB
 read -p "POSTGRES_NON_ROOT_USER: " POSTGRES_NON_ROOT_USER
-read -s -p "POSTGRES_NON_ROOT_PASSWORD: " POSTGRES_NON_ROOT_PASSWORD
-echo ""
+read -s -p "POSTGRES_NON_ROOT_PASSWORD: " POSTGRES_NON_ROOT_PASSWORD; echo ""
 
-echo ""
-echo "[INFO] Validating input..."
-
-# ==============================
 # VALIDATION
-# ==============================
 if [[ -z "$POSTGRES_USER" || -z "$POSTGRES_PASSWORD" || -z "$POSTGRES_DB" ]]; then
-  echo "[ERROR] PostgreSQL config tidak boleh kosong!"
-  exit 1
+    echo "[ERROR] PostgreSQL config wajib diisi!"
+    exit 1
 fi
 
-# ==============================
-# AUTO GENERATE TOKEN
-# ==============================
+# TOKEN
 RUNNERS_AUTH_TOKEN=$(openssl rand -hex 16)
 
 INSTALL_DIR="/opt/n8n"
 
 echo ""
-echo "[INFO] Starting installation..."
+echo "[INFO] Starting deployment..."
 
 # ==============================
-# 1. PREPARE DIRECTORY
+# SETUP DIR
 # ==============================
-run_step "[1/4] Preparing directory" mkdir -p "$INSTALL_DIR"
+run_step "[3/6] Prepare directory" mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
 # ==============================
-# 2. CLONE REPO
+# CLONE
 # ==============================
-run_step "[2/4] Cloning n8n repository" git clone https://github.com/n8n-io/n8n-hosting.git . || true
+run_step "[4/6] Clone repo" git clone https://github.com/n8n-io/n8n-hosting.git . || true
 
 # ==============================
-# 3. CREATE ENV
+# ENV
 # ==============================
-echo ""
-echo "======================================"
-echo "[3/4] Creating .env configuration"
-echo "======================================"
+echo "[...] Creating .env"
 
 cat <<EOF > .env
 N8N_VERSION=stable
@@ -120,33 +103,28 @@ POSTGRES_NON_ROOT_PASSWORD=$POSTGRES_NON_ROOT_PASSWORD
 RUNNERS_AUTH_TOKEN=$RUNNERS_AUTH_TOKEN
 EOF
 
-echo "[OK] .env created"
+echo "[OK] .env ready"
 
 # ==============================
-# 4. START DOCKER
+# DOCKER RUN
 # ==============================
-run_step "[4/4] Starting n8n services" docker compose -f docker-compose/withPostgres/docker-compose.yml up -d
+run_step "[5/6] Start containers" docker compose -f docker-compose/withPostgres/docker-compose.yml up -d
 
 # ==============================
-# WAIT FOR CONTAINERS
+# WAIT
 # ==============================
-echo ""
-echo "[INFO] Waiting for services..."
+echo "[INFO] Waiting services..."
 
 for i in {1..30}; do
     sleep 5
     RUNNING=$(docker ps --format '{{.Names}}' | grep -E "n8n|postgres" | wc -l)
+    echo "[INFO] $RUNNING/2 running ($i/30)"
 
-    echo "[INFO] Progress: $RUNNING/2 containers running... ($i/30)"
-
-    if [ "$RUNNING" -ge 2 ]; then
-        echo "[SUCCESS] All services are running!"
-        break
-    fi
+    [[ "$RUNNING" -ge 2 ]] && break
 done
 
 # ==============================
-# FINAL OUTPUT
+# DONE
 # ==============================
 IP=$(hostname -I | awk '{print $1}')
 
@@ -154,24 +132,15 @@ echo ""
 echo "======================================"
 echo "        INSTALLATION COMPLETE"
 echo "======================================"
-echo ""
 
-echo "[ACCESS]"
+echo "URL:"
 echo "Domain : http://$DOMAIN"
 echo "IP     : http://$IP:5678"
-echo ""
 
-echo "[DATABASE]"
-echo "POSTGRES_USER=$POSTGRES_USER"
-echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
-echo "POSTGRES_DB=$POSTGRES_DB"
 echo ""
+echo "TOKEN:"
+echo "$RUNNERS_AUTH_TOKEN"
 
-echo "[RUNNER TOKEN]"
-echo "RUNNERS_AUTH_TOKEN=$RUNNERS_AUTH_TOKEN"
 echo ""
-
-echo "[LOG]"
-echo "Full log: $LOG_FILE"
-echo "Docker logs: docker logs -f n8n"
-echo ""
+echo "LOG:"
+echo "$LOG_FILE"
