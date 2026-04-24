@@ -2,41 +2,71 @@
 
 set -e
 
-LOG_FILE="/var/log/n8n-full-install.log"
-exec > >(tee -a "$LOG_FILE") 2>&1
+MAIN_LOG="/var/log/n8n-install.log"
+DOCKER_LOG="/var/log/n8n-docker.log"
+
+exec > >(tee -a "$MAIN_LOG") 2>&1
 
 # ==============================
 # HELPER
 # ==============================
-run_step() {
-    STEP_NAME="$1"
+run_bg() {
+    STEP="$1"
     shift
 
     echo ""
     echo "======================================"
-    echo "[...] $STEP_NAME"
+    echo "[...] $STEP"
     echo "======================================"
 
-    if "$@"; then
-        echo "[OK] $STEP_NAME"
-    else
-        echo "[ERROR] $STEP_NAME"
-        echo "[INFO] Check log: $LOG_FILE"
-        exit 1
-    fi
-}
-
-spinner_wait() {
+    "$@" >> "$MAIN_LOG" 2>&1 &
     PID=$!
+
     SP='-\|/'
     i=0
+
     while kill -0 $PID 2>/dev/null; do
         i=$(( (i+1) %4 ))
-        printf "\r[INFO] Processing... %s" "${SP:$i:1}"
+        printf "\r[INFO] %s... %s" "$STEP" "${SP:$i:1}"
         sleep 0.3
     done
+
     wait $PID
+    STATUS=$?
+
     echo ""
+
+    if [ $STATUS -ne 0 ]; then
+        echo "[ERROR] $STEP failed!"
+        echo "[INFO] Check log: $MAIN_LOG"
+        exit 1
+    fi
+
+    echo "[OK] $STEP"
+}
+
+wait_apt() {
+    echo "[...] Waiting for apt lock..."
+
+    (
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+        sleep 1
+    done
+    ) &
+
+    PID=$!
+
+    SP='-\|/'
+    i=0
+
+    while kill -0 $PID 2>/dev/null; do
+        i=$(( (i+1) %4 ))
+        printf "\r[INFO] Waiting apt... %s" "${SP:$i:1}"
+        sleep 0.3
+    done
+
+    echo ""
+    echo "[OK] apt ready"
 }
 
 # ==============================
@@ -48,31 +78,17 @@ echo "   N8N INSTALLER + WIZARD"
 echo "----------------------------------------"
 echo ""
 
-# ==============================
-# CONFIRM
-# ==============================
 read -p "Start configuration wizard? (y/n): " CONFIRM
 [[ "$CONFIRM" != "y" ]] && echo "Cancelled." && exit 0
 
 # ==============================
-# INSTALL DOCKER
+# DOCKER INSTALL
 # ==============================
-echo "[INFO] Waiting for apt lock..."
+wait_apt
 
-while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
-    echo "[WAIT] apt running..."
-    sleep 5
-done
-
-echo "[OK] apt ready"
-
-run_step "[1/6] Download Docker" curl -fsSL https://get.docker.com -o get-docker.sh
-run_step "[2/6] Install Docker" sh get-docker.sh
-
-echo "[...] Starting Docker"
-systemctl start docker || service docker start || true
-sleep 3
-echo "[OK] Docker ready"
+run_bg "[1/6] Download Docker" curl -fsSL https://get.docker.com -o get-docker.sh
+run_bg "[2/6] Install Docker" sh get-docker.sh
+run_bg "[3/6] Start Docker" bash -c "systemctl start docker || service docker start || true"
 
 # ==============================
 # INPUT
@@ -84,11 +100,12 @@ echo "=== PostgreSQL ==="
 read -p "POSTGRES_USER: " POSTGRES_USER
 
 while true; do
-    read -s -p "POSTGRES_PASSWORD: " POSTGRES_PASSWORD; echo ""
-    read -s -p "Re-enter POSTGRES_PASSWORD: " CONFIRM_PASS; echo ""
+    read -s -p "POSTGRES_PASSWORD: " P1; echo ""
+    read -s -p "Re-enter POSTGRES_PASSWORD: " P2; echo ""
 
-    [[ "$POSTGRES_PASSWORD" != "$CONFIRM_PASS" ]] && echo "[ERROR] Not match!" && continue
-    [[ -z "$POSTGRES_PASSWORD" ]] && echo "[ERROR] Empty!" && continue
+    [[ "$P1" != "$P2" ]] && echo "[ERROR] Not match!" && continue
+    [[ -z "$P1" ]] && echo "[ERROR] Empty!" && continue
+    POSTGRES_PASSWORD="$P1"
     break
 done
 
@@ -96,15 +113,15 @@ read -p "POSTGRES_DB: " POSTGRES_DB
 read -p "POSTGRES_NON_ROOT_USER: " POSTGRES_NON_ROOT_USER
 
 while true; do
-    read -s -p "POSTGRES_NON_ROOT_PASSWORD: " POSTGRES_NON_ROOT_PASSWORD; echo ""
-    read -s -p "Re-enter POSTGRES_NON_ROOT_PASSWORD: " CONFIRM_PASS; echo ""
+    read -s -p "POSTGRES_NON_ROOT_PASSWORD: " P1; echo ""
+    read -s -p "Re-enter POSTGRES_NON_ROOT_PASSWORD: " P2; echo ""
 
-    [[ "$POSTGRES_NON_ROOT_PASSWORD" != "$CONFIRM_PASS" ]] && echo "[ERROR] Not match!" && continue
-    [[ -z "$POSTGRES_NON_ROOT_PASSWORD" ]] && echo "[ERROR] Empty!" && continue
+    [[ "$P1" != "$P2" ]] && echo "[ERROR] Not match!" && continue
+    [[ -z "$P1" ]] && echo "[ERROR] Empty!" && continue
+    POSTGRES_NON_ROOT_PASSWORD="$P1"
     break
 done
 
-# VALIDATION
 [[ -z "$POSTGRES_USER" || -z "$POSTGRES_DB" ]] && echo "[ERROR] Required field kosong!" && exit 1
 
 RUNNERS_AUTH_TOKEN=$(openssl rand -hex 16)
@@ -113,10 +130,10 @@ INSTALL_DIR="/opt/n8n"
 # ==============================
 # PREPARE
 # ==============================
-run_step "[3/6] Prepare directory" mkdir -p "$INSTALL_DIR"
+run_bg "[4/6] Prepare directory" mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-run_step "[4/6] Clone repo" git clone https://github.com/muh-yazid/n8n-http.git . || true
+run_bg "[5/6] Clone repo" git clone https://github.com/muh-yazid/n8n-http.git . || true
 
 # ==============================
 # ENV
@@ -145,15 +162,24 @@ EOF
 echo "[OK] .env ready"
 
 # ==============================
-# DOCKER START (CLEAN MODE)
+# DOCKER START
 # ==============================
+echo "[...] Starting containers"
+docker compose up -d >> "$DOCKER_LOG" 2>&1 &
+
+PID=$!
+SP='-\|/'
+i=0
+
+while kill -0 $PID 2>/dev/null; do
+    i=$(( (i+1) %4 ))
+    printf "\r[INFO] Deploying containers... %s" "${SP:$i:1}"
+    sleep 0.3
+done
+
+wait $PID
 echo ""
-echo "[...] Starting containers (background)"
-
-docker compose up -d > "$LOG_FILE.docker" 2>&1 &
-spinner_wait
-
-echo "[OK] Containers triggered"
+echo "[OK] Containers started"
 
 # ==============================
 # WAIT POSTGRES
@@ -165,35 +191,17 @@ for i in {1..30}; do
 
     printf "\r[INFO] Postgres: %s (%d/30)" "$STATUS" "$i"
 
-    if [[ "$STATUS" == "healthy" ]]; then
-        echo ""
-        echo "[OK] PostgreSQL ready"
-        break
-    fi
-
+    [[ "$STATUS" == "healthy" ]] && break
     sleep 2
 done
 
-# ==============================
-# ENSURE SERVICES
-# ==============================
-echo "[...] Ensuring containers up"
-docker compose up -d >> "$LOG_FILE" 2>&1
-
-# ==============================
-# WAIT FINAL
-# ==============================
-echo "[INFO] Checking services..."
-
-for i in {1..30}; do
-    sleep 3
-    RUNNING=$(docker ps --format '{{.Names}}' | grep -E "n8n|postgres" | wc -l)
-    printf "\r[INFO] Running: %d/2 (%d/30)" "$RUNNING" "$i"
-
-    [[ "$RUNNING" -ge 2 ]] && break
-done
-
 echo ""
+echo "[OK] PostgreSQL ready"
+
+# ==============================
+# ENSURE FINAL
+# ==============================
+docker compose up -d >> "$DOCKER_LOG" 2>&1
 
 # ==============================
 # DONE
@@ -217,5 +225,8 @@ echo "/opt/n8n"
 
 echo ""
 echo "LOG:"
-echo "$LOG_FILE"
-echo "$LOG_FILE.docker"
+echo "Main   : $MAIN_LOG"
+echo "Docker : $DOCKER_LOG"
+
+echo ""
+echo "[SUCCESS] Setup selesai"
