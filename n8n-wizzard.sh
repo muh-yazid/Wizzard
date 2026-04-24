@@ -5,6 +5,9 @@ set -e
 LOG_FILE="/var/log/n8n-full-install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
+# ==============================
+# HELPER
+# ==============================
 run_step() {
     STEP_NAME="$1"
     shift
@@ -23,15 +26,30 @@ run_step() {
     fi
 }
 
-clear
+spinner_wait() {
+    PID=$!
+    SP='-\|/'
+    i=0
+    while kill -0 $PID 2>/dev/null; do
+        i=$(( (i+1) %4 ))
+        printf "\r[INFO] Processing... %s" "${SP:$i:1}"
+        sleep 0.3
+    done
+    wait $PID
+    echo ""
+}
 
+# ==============================
+# HEADER
+# ==============================
+clear
 echo "----------------------------------------"
 echo "   N8N INSTALLER + WIZARD"
 echo "----------------------------------------"
 echo ""
 
 # ==============================
-# WIZARD CONFIRM
+# CONFIRM
 # ==============================
 read -p "Start configuration wizard? (y/n): " CONFIRM
 [[ "$CONFIRM" != "y" ]] && echo "Cancelled." && exit 0
@@ -39,24 +57,19 @@ read -p "Start configuration wizard? (y/n): " CONFIRM
 # ==============================
 # INSTALL DOCKER
 # ==============================
-echo "[INFO] Waiting for apt/dpkg lock..."
+echo "[INFO] Waiting for apt lock..."
 
 while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
-    echo "[WAIT] apt is running... retry in 5s"
+    echo "[WAIT] apt running..."
     sleep 5
 done
 
-while fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
-    echo "[WAIT] apt lists lock... retry in 5s"
-    sleep 5
-done
+echo "[OK] apt ready"
 
-echo "[OK] apt is ready"
-
-run_step "[1/6] Download Docker installer" curl -fsSL https://get.docker.com -o get-docker.sh
+run_step "[1/6] Download Docker" curl -fsSL https://get.docker.com -o get-docker.sh
 run_step "[2/6] Install Docker" sh get-docker.sh
 
-echo "[...] Starting Docker service"
+echo "[...] Starting Docker"
 systemctl start docker || service docker start || true
 sleep 3
 echo "[OK] Docker ready"
@@ -64,76 +77,52 @@ echo "[OK] Docker ready"
 # ==============================
 # INPUT
 # ==============================
-read -p "Enter domain name (ex: n8n.domain.com): " DOMAIN
+read -p "Enter domain: " DOMAIN
 
 echo "=== PostgreSQL ==="
 
 read -p "POSTGRES_USER: " POSTGRES_USER
 
-# 🔐 PASSWORD VALIDATION LOOP
 while true; do
     read -s -p "POSTGRES_PASSWORD: " POSTGRES_PASSWORD; echo ""
-    read -s -p "Re-enter POSTGRES_PASSWORD: " POSTGRES_PASSWORD_CONFIRM; echo ""
+    read -s -p "Re-enter POSTGRES_PASSWORD: " CONFIRM_PASS; echo ""
 
-    if [[ "$POSTGRES_PASSWORD" != "$POSTGRES_PASSWORD_CONFIRM" ]]; then
-        echo "[ERROR] Password tidak sama, ulangi!"
-    elif [[ -z "$POSTGRES_PASSWORD" ]]; then
-        echo "[ERROR] Password tidak boleh kosong!"
-    else
-        break
-    fi
+    [[ "$POSTGRES_PASSWORD" != "$CONFIRM_PASS" ]] && echo "[ERROR] Not match!" && continue
+    [[ -z "$POSTGRES_PASSWORD" ]] && echo "[ERROR] Empty!" && continue
+    break
 done
 
 read -p "POSTGRES_DB: " POSTGRES_DB
 read -p "POSTGRES_NON_ROOT_USER: " POSTGRES_NON_ROOT_USER
 
-# 🔐 NON ROOT PASSWORD VALIDATION
 while true; do
     read -s -p "POSTGRES_NON_ROOT_PASSWORD: " POSTGRES_NON_ROOT_PASSWORD; echo ""
-    read -s -p "Re-enter POSTGRES_NON_ROOT_PASSWORD: " POSTGRES_NON_ROOT_PASSWORD_CONFIRM; echo ""
+    read -s -p "Re-enter POSTGRES_NON_ROOT_PASSWORD: " CONFIRM_PASS; echo ""
 
-    if [[ "$POSTGRES_NON_ROOT_PASSWORD" != "$POSTGRES_NON_ROOT_PASSWORD_CONFIRM" ]]; then
-        echo "[ERROR] Password tidak sama, ulangi!"
-    elif [[ -z "$POSTGRES_NON_ROOT_PASSWORD" ]]; then
-        echo "[ERROR] Password tidak boleh kosong!"
-    else
-        break
-    fi
+    [[ "$POSTGRES_NON_ROOT_PASSWORD" != "$CONFIRM_PASS" ]] && echo "[ERROR] Not match!" && continue
+    [[ -z "$POSTGRES_NON_ROOT_PASSWORD" ]] && echo "[ERROR] Empty!" && continue
+    break
 done
 
 # VALIDATION
-if [[ -z "$POSTGRES_USER" || -z "$POSTGRES_DB" ]]; then
-    echo "[ERROR] PostgreSQL config wajib diisi!"
-    exit 1
-fi
+[[ -z "$POSTGRES_USER" || -z "$POSTGRES_DB" ]] && echo "[ERROR] Required field kosong!" && exit 1
 
-# TOKEN
 RUNNERS_AUTH_TOKEN=$(openssl rand -hex 16)
-
 INSTALL_DIR="/opt/n8n"
 
-echo ""
-echo "[INFO] Starting deployment..."
-
 # ==============================
-# SETUP DIR
+# PREPARE
 # ==============================
 run_step "[3/6] Prepare directory" mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-# ==============================
-# CLONE
-# ==============================
 run_step "[4/6] Clone repo" git clone https://github.com/muh-yazid/n8n-http.git . || true
-
-# ==============================
-# GET IP
-# ==============================
-IP=$(hostname -I | awk '{print $1}')
 
 # ==============================
 # ENV
 # ==============================
+IP=$(hostname -I | awk '{print $1}')
+
 echo "[...] Creating .env"
 
 cat <<EOF > .env
@@ -148,42 +137,63 @@ POSTGRES_NON_ROOT_PASSWORD=$POSTGRES_NON_ROOT_PASSWORD
 
 RUNNERS_AUTH_TOKEN=$RUNNERS_AUTH_TOKEN
 
-FQDN=$IP:
+N8N_SECURE_COOKIE=false
+N8N_HOST=$IP:5678
+WEBHOOK_URL=http://$IP:5678/
 EOF
 
 echo "[OK] .env ready"
 
 # ==============================
-# DOCKER RUN
+# DOCKER START (CLEAN MODE)
 # ==============================
-echo "[...] Starting containers"
-docker compose up -d || true
+echo ""
+echo "[...] Starting containers (background)"
 
-echo "[INFO] Waiting for PostgreSQL..."
+docker compose up -d > "$LOG_FILE.docker" 2>&1 &
+spinner_wait
+
+echo "[OK] Containers triggered"
+
+# ==============================
+# WAIT POSTGRES
+# ==============================
+echo "[INFO] Waiting PostgreSQL..."
 
 for i in {1..30}; do
-    STATUS=$(docker inspect --format='{{.State.Health.Status}}' n8n-postgres-1 2>/dev/null || echo "starting")
-    echo "[INFO] Postgres: $STATUS ($i/30)"
+    STATUS=$(docker inspect --format='{{.State.Health.Status}}' $(docker ps -a --format '{{.Names}}' | grep postgres | head -n1) 2>/dev/null || echo "starting")
 
-    [[ "$STATUS" == "healthy" ]] && break
-    sleep 3
+    printf "\r[INFO] Postgres: %s (%d/30)" "$STATUS" "$i"
+
+    if [[ "$STATUS" == "healthy" ]]; then
+        echo ""
+        echo "[OK] PostgreSQL ready"
+        break
+    fi
+
+    sleep 2
 done
 
-echo "[INFO] Ensuring all services running..."
-docker compose up -d
+# ==============================
+# ENSURE SERVICES
+# ==============================
+echo "[...] Ensuring containers up"
+docker compose up -d >> "$LOG_FILE" 2>&1
 
 # ==============================
-# WAIT
+# WAIT FINAL
 # ==============================
-echo "[INFO] Waiting services..."
+echo "[INFO] Checking services..."
 
 for i in {1..30}; do
-    sleep 5
+    sleep 3
     RUNNING=$(docker ps --format '{{.Names}}' | grep -E "n8n|postgres" | wc -l)
-    echo "[INFO] $RUNNING/2 running ($i/30)"
+    printf "\r[INFO] Running: %d/2 (%d/30)" "$RUNNING" "$i"
 
     [[ "$RUNNING" -ge 2 ]] && break
 done
+
+echo ""
 
 # ==============================
 # DONE
@@ -197,12 +207,15 @@ echo "URL:"
 echo "Domain : http://$DOMAIN"
 echo "IP     : http://$IP:5678"
 
-echo "Installation Path : /opt/n8n/"
-
 echo ""
 echo "TOKEN:"
 echo "$RUNNERS_AUTH_TOKEN"
 
 echo ""
+echo "PATH:"
+echo "/opt/n8n"
+
+echo ""
 echo "LOG:"
 echo "$LOG_FILE"
+echo "$LOG_FILE.docker"
