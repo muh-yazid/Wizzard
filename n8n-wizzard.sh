@@ -3,9 +3,11 @@
 # ==============================
 # SAFETY & LOGGING
 # ==============================
-# set -e
+set -e
 
 LOG_FILE="/var/log/install-n8n.log"
+
+# tampil ke layar + simpan log
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 # ==============================
@@ -16,12 +18,15 @@ run_step() {
     shift
 
     echo ""
+    echo "======================================"
     echo "[...] $STEP_NAME"
+    echo "======================================"
 
-    if "$@" >/dev/null 2>&1; then
+    if "$@"; then
         echo "[OK] $STEP_NAME"
     else
-        echo "[ERROR] $STEP_NAME (cek log: $LOG_FILE)"
+        echo "[ERROR] $STEP_NAME"
+        echo "[INFO] Cek log: $LOG_FILE"
         exit 1
     fi
 }
@@ -31,7 +36,7 @@ clear
 echo "----------------------------------------"
 echo "   N8N Wizard Configuration v1.0"
 echo "----------------------------------------"
-echo "Start"
+echo ""
 
 # ==============================
 # CONFIRMATION
@@ -55,10 +60,12 @@ echo ""
 echo "=== PostgreSQL Configuration ==="
 
 read -p "POSTGRES_USER: " POSTGRES_USER
-read -p "POSTGRES_PASSWORD: " POSTGRES_PASSWORD
+read -s -p "POSTGRES_PASSWORD: " POSTGRES_PASSWORD
+echo ""
 read -p "POSTGRES_DB: " POSTGRES_DB
 read -p "POSTGRES_NON_ROOT_USER: " POSTGRES_NON_ROOT_USER
-read -p "POSTGRES_NON_ROOT_PASSWORD: " POSTGRES_NON_ROOT_PASSWORD
+read -s -p "POSTGRES_NON_ROOT_PASSWORD: " POSTGRES_NON_ROOT_PASSWORD
+echo ""
 
 echo ""
 echo "[INFO] Validating input..."
@@ -84,18 +91,21 @@ echo "[INFO] Starting installation..."
 # ==============================
 # 1. PREPARE DIRECTORY
 # ==============================
-run_step "Preparing directory" mkdir -p "$INSTALL_DIR"
+run_step "[1/4] Preparing directory" mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
 # ==============================
 # 2. CLONE REPO
 # ==============================
-run_step "Cloning n8n repository" git clone https://github.com/n8n-io/n8n-hosting.git . || true
+run_step "[2/4] Cloning n8n repository" git clone https://github.com/n8n-io/n8n-hosting.git . || true
 
 # ==============================
 # 3. CREATE ENV
 # ==============================
-echo "[...] Creating .env configuration"
+echo ""
+echo "======================================"
+echo "[3/4] Creating .env configuration"
+echo "======================================"
 
 cat <<EOF > .env
 N8N_VERSION=stable
@@ -115,7 +125,7 @@ echo "[OK] .env created"
 # ==============================
 # 4. START DOCKER
 # ==============================
-run_step "Starting n8n services" docker compose -f docker-compose/withPostgres/docker-compose.yml up -d
+run_step "[4/4] Starting n8n services" docker compose -f docker-compose/withPostgres/docker-compose.yml up -d
 
 # ==============================
 # WAIT FOR CONTAINERS
