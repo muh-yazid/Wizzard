@@ -25,4 +25,4 @@ echo ""
 
 bash /root/n8n-installer.sh
 
-echo "[INFO] Log: $LOG_FILE"
+echo "Wizzar : $LOG_FILE"
