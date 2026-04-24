@@ -1,5 +1,31 @@
 #!/bin/bash
 
+# ==============================
+# SAFETY & LOGGING
+# ==============================
+set -e
+
+LOG_FILE="/root/n8n-wizard.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+# ==============================
+# HELPER FUNCTION
+# ==============================
+run_step() {
+    STEP_NAME="$1"
+    shift
+
+    echo ""
+    echo "[...] $STEP_NAME"
+
+    if "$@" >/dev/null 2>&1; then
+        echo "[OK] $STEP_NAME"
+    else
+        echo "[ERROR] $STEP_NAME (cek log: $LOG_FILE)"
+        exit 1
+    fi
+}
+
 clear
 
 echo "----------------------------------------"
@@ -56,22 +82,20 @@ echo ""
 echo "[INFO] Starting installation..."
 
 # ==============================
-# SETUP DIRECTORY
+# 1. PREPARE DIRECTORY
 # ==============================
-echo "[2/5] Preparing directory..."
-mkdir -p $INSTALL_DIR
-cd $INSTALL_DIR
+run_step "Preparing directory" mkdir -p "$INSTALL_DIR"
+cd "$INSTALL_DIR"
 
 # ==============================
-# CLONE REPO
+# 2. CLONE REPO
 # ==============================
-echo "[3/5] Cloning n8n hosting repository..."
-git clone https://github.com/n8n-io/n8n-hosting.git . || true
+run_step "Cloning n8n repository" git clone https://github.com/n8n-io/n8n-hosting.git . || true
 
 # ==============================
-# CREATE ENV FILE
+# 3. CREATE ENV
 # ==============================
-echo "[4/5] Creating .env configuration..."
+echo "[...] Creating .env configuration"
 
 cat <<EOF > .env
 N8N_VERSION=stable
@@ -86,20 +110,24 @@ POSTGRES_NON_ROOT_PASSWORD=$POSTGRES_NON_ROOT_PASSWORD
 RUNNERS_AUTH_TOKEN=$RUNNERS_AUTH_TOKEN
 EOF
 
-# ==============================
-# RUN DOCKER
-# ==============================
-echo "[5/5] Starting n8n services..."
-docker compose -f docker-compose/withPostgres/docker-compose.yml up -d
+echo "[OK] .env created"
 
+# ==============================
+# 4. START DOCKER
+# ==============================
+run_step "Starting n8n services" docker compose -f docker-compose/withPostgres/docker-compose.yml up -d
+
+# ==============================
+# WAIT FOR CONTAINERS
+# ==============================
 echo ""
 echo "[INFO] Waiting for services..."
 
 for i in {1..30}; do
-    sleep 10
+    sleep 5
     RUNNING=$(docker ps --format '{{.Names}}' | grep -E "n8n|postgres" | wc -l)
 
-    echo "[INFO] Progress: $RUNNING containers running... ($i/30)"
+    echo "[INFO] Progress: $RUNNING/2 containers running... ($i/30)"
 
     if [ "$RUNNING" -ge 2 ]; then
         echo "[SUCCESS] All services are running!"
@@ -133,6 +161,7 @@ echo "[RUNNER TOKEN]"
 echo "RUNNERS_AUTH_TOKEN=$RUNNERS_AUTH_TOKEN"
 echo ""
 
-echo "[INFO] Check logs if needed:"
-echo "docker logs -f n8n"
+echo "[LOG]"
+echo "Full log: $LOG_FILE"
+echo "Docker logs: docker logs -f n8n"
 echo ""
