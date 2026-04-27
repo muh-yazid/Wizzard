@@ -2,203 +2,167 @@
 
 set -e
 
-MAIN_LOG="/var/log/n8n-install.log"
+LOG_FILE="/var/log/n8n-install.log"
+DOCKER_LOG="/var/log/n8n-docker.log"
 
-exec > >(tee -a "$MAIN_LOG") 2>&1
+exec > >(tee -a "$LOG_FILE") 2>&1
 
-# ==============================
-# HELPER
-# ==============================
-run_bg() {
-    STEP="$1"
+spinner() {
+    local pid=$1
+    local spin='-\|/'
+    local i=0
+    while kill -0 $pid 2>/dev/null; do
+        i=$(( (i+1) %4 ))
+        printf "\r[%c] Working..." "${spin:$i:1}"
+        sleep 0.2
+    done
+    printf "\r"
+}
+
+run_step_bg() {
+    DESC="$1"
     shift
 
     echo ""
     echo "======================================"
-    echo "[...] $STEP"
+    echo "[...] $DESC"
     echo "======================================"
 
-    "$@" >> "$MAIN_LOG" 2>&1 &
+    "$@" >> "$LOG_FILE" 2>&1 &
     PID=$!
 
-    SP='-\|/'
-    i=0
-
-    while kill -0 $PID 2>/dev/null; do
-        i=$(( (i+1) %4 ))
-        printf "\r[INFO] %s... %s" "$STEP" "${SP:$i:1}"
-        sleep 0.3
-    done
-
+    spinner $PID
     wait $PID
-    STATUS=$?
 
-    echo ""
-
-    if [ $STATUS -ne 0 ]; then
-        echo "[ERROR] $STEP failed!"
-        echo "[INFO] Check log: $MAIN_LOG"
-        exit 1
-    fi
-
-    echo "[OK] $STEP"
+    echo "[OK] $DESC"
 }
 
-wait_apt() {
-    echo "[...] Waiting for apt lock..."
-
-    (
-    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
-        sleep 1
-    done
-    ) &
-
-    PID=$!
-
-    SP='-\|/'
-    i=0
-
-    while kill -0 $PID 2>/dev/null; do
-        i=$(( (i+1) %4 ))
-        printf "\r[INFO] Waiting apt... %s" "${SP:$i:1}"
-        sleep 0.3
-    done
-
-    echo ""
-    echo "[OK] apt ready"
-}
-
-# ==============================
-# HEADER
-# ==============================
 clear
 echo "----------------------------------------"
 echo "   N8N INSTALLER + WIZARD"
 echo "----------------------------------------"
-echo ""
-
-read -p "Start configuration wizard? (y/n): " CONFIRM
-[[ "$CONFIRM" != "y" ]] && echo "Cancelled." && exit 0
 
 # ==============================
-# DOCKER INSTALL
+# CONFIRM
 # ==============================
-wait_apt
+read -p "Start wizard? (y/n): " CONFIRM
+[[ "$CONFIRM" != "y" ]] && exit 0
 
-run_bg "[1/6] Download Docker" curl -fsSL https://get.docker.com -o get-docker.sh
-run_bg "[2/6] Install Docker" sh get-docker.sh
-run_bg "[3/6] Start Docker" bash -c "systemctl start docker || service docker start || true"
+# ==============================
+# WAIT APT LOCK
+# ==============================
+echo "[INFO] Waiting apt lock..."
+while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 3; done
+
+# ==============================
+# INSTALL DOCKER
+# ==============================
+run_step_bg "Download Docker" curl -fsSL https://get.docker.com -o get-docker.sh
+run_step_bg "Install Docker" sh get-docker.sh
+
+systemctl start docker || service docker start || true
 
 # ==============================
 # INPUT
 # ==============================
-read -p "Enter domain: " DOMAIN
-
-echo "=== PostgreSQL ==="
+read -p "Domain: " DOMAIN
 
 read -p "POSTGRES_USER: " POSTGRES_USER
 
 while true; do
     read -s -p "POSTGRES_PASSWORD: " P1; echo ""
-    read -s -p "Re-enter POSTGRES_PASSWORD: " P2; echo ""
+    read -s -p "Re-enter: " P2; echo ""
 
-    [[ "$P1" != "$P2" ]] && echo "[ERROR] Not match!" && continue
-    [[ -z "$P1" ]] && echo "[ERROR] Empty!" && continue
-    POSTGRES_PASSWORD="$P1"
-    break
+    [[ "$P1" == "$P2" && -n "$P1" ]] && break
+    echo "[ERROR] Password mismatch"
 done
+
+POSTGRES_PASSWORD=$P1
 
 read -p "POSTGRES_DB: " POSTGRES_DB
 read -p "POSTGRES_NON_ROOT_USER: " POSTGRES_NON_ROOT_USER
 
 while true; do
     read -s -p "POSTGRES_NON_ROOT_PASSWORD: " P1; echo ""
-    read -s -p "Re-enter POSTGRES_NON_ROOT_PASSWORD: " P2; echo ""
+    read -s -p "Re-enter: " P2; echo ""
 
-    [[ "$P1" != "$P2" ]] && echo "[ERROR] Not match!" && continue
-    [[ -z "$P1" ]] && echo "[ERROR] Empty!" && continue
-    POSTGRES_NON_ROOT_PASSWORD="$P1"
-    break
+    [[ "$P1" == "$P2" && -n "$P1" ]] && break
+    echo "[ERROR] Password mismatch"
 done
 
-[[ -z "$POSTGRES_USER" || -z "$POSTGRES_DB" ]] && echo "[ERROR] Required field kosong!" && exit 1
+POSTGRES_NON_ROOT_PASSWORD=$P1
 
 RUNNERS_AUTH_TOKEN=$(openssl rand -hex 16)
+
 INSTALL_DIR="/opt/n8n"
+mkdir -p $INSTALL_DIR
+cd $INSTALL_DIR
 
 # ==============================
-# PREPARE
+# CLONE REPO
 # ==============================
-run_bg "[4/6] Prepare directory" mkdir -p "$INSTALL_DIR"
-cd "$INSTALL_DIR"
+run_step_bg "Clone repo" git clone https://github.com/KnowLedZ/n8n-http.git . || true
 
-run_bg "[5/6] Clone repo" git clone https://github.com/muh-yazid/n8n-http.git . || true
+IP=$(hostname -I | awk '{print $1}')
 
 # ==============================
 # ENV
 # ==============================
-IP=$(hostname -I | awk '{print $1}')
-
-echo "[...] Creating .env"
-
 cat <<EOF > .env
-N8N_VERSION=stable
-
 POSTGRES_USER=$POSTGRES_USER
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 POSTGRES_DB=$POSTGRES_DB
-
 POSTGRES_NON_ROOT_USER=$POSTGRES_NON_ROOT_USER
 POSTGRES_NON_ROOT_PASSWORD=$POSTGRES_NON_ROOT_PASSWORD
 
-RUNNERS_AUTH_TOKEN=$RUNNERS_AUTH_TOKEN
+N8N_SECURE_COOKIE=false
+N8N_HOST=$IP:5678
+WEBHOOK_URL=http://$IP:5678/
 
-FQDN=$IP
+RUNNERS_AUTH_TOKEN=$RUNNERS_AUTH_TOKEN
 EOF
 
-echo "[OK] .env ready"
+# ==============================
+# START DOCKER
+# ==============================
+echo "[INFO] Starting containers..."
+docker compose up -d > "$DOCKER_LOG" 2>&1
 
 # ==============================
-# DOCKER START
-# ==============================
-echo "[...] Starting containers"
-docker compose up -d >> "$MAIN_LOG" 2>&1 &
-
-PID=$!
-SP='-\|/'
-i=0
-
-while kill -0 $PID 2>/dev/null; do
-    i=$(( (i+1) %4 ))
-    printf "\r[INFO] Deploying containers... %s" "${SP:$i:1}"
-    sleep 0.3
-done
-
-wait $PID
-echo ""
-echo "[OK] Containers started"
-
-# ==============================
-# WAIT POSTGRES
+# WAIT POSTGRES HEALTH
 # ==============================
 echo "[INFO] Waiting PostgreSQL..."
 
-for i in {1..30}; do
-    STATUS=$(docker inspect --format='{{.State.Health.Status}}' $(docker ps -a --format '{{.Names}}' | grep postgres | head -n1) 2>/dev/null || echo "starting")
+for i in {1..40}; do
+    STATUS=$(docker inspect --format='{{.State.Health.Status}}' n8n-postgres-1 2>/dev/null || echo "starting")
 
-    printf "\r[INFO] Postgres: %s (%d/30)" "$STATUS" "$i"
+    printf "\r[INFO] Postgres: %s (%d/40)" "$STATUS" "$i"
 
     [[ "$STATUS" == "healthy" ]] && break
-    sleep 2
+    sleep 3
 done
 
 echo ""
-echo "[OK] PostgreSQL ready"
 
 # ==============================
-# ENSURE FINAL
+# ENSURE RUNNING
 # ==============================
-docker compose up -d >> "$MAIN_LOG" 2>&1
+docker compose up -d >> "$DOCKER_LOG" 2>&1
+
+# ==============================
+# WAIT N8N
+# ==============================
+echo "[INFO] Waiting n8n..."
+
+for i in {1..40}; do
+    RUNNING=$(docker ps --format '{{.Names}}' | grep -c n8n-n8n-1)
+    printf "\r[INFO] n8n: %d (%d/40)" "$RUNNING" "$i"
+
+    [[ "$RUNNING" -ge 1 ]] && break
+    sleep 3
+done
+
+echo ""
 
 # ==============================
 # DONE
@@ -208,7 +172,6 @@ echo "======================================"
 echo "        INSTALLATION COMPLETE"
 echo "======================================"
 
-echo "URL:"
 echo "Domain : http://$DOMAIN"
 echo "IP     : http://$IP:5678"
 
@@ -217,9 +180,6 @@ echo "TOKEN:"
 echo "$RUNNERS_AUTH_TOKEN"
 
 echo ""
-echo "PATH:"
-echo "/opt/n8n"
-
-echo ""
 echo "LOG:"
-echo "Main   : $MAIN_LOG"
+echo "$LOG_FILE"
+echo "$DOCKER_LOG"
