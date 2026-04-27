@@ -79,12 +79,17 @@ wait_apt() {
 # ==============================
 clear
 echo "----------------------------------------"
-echo "   N8N INSTALLER + WIZARD"
+echo "   N8N WIZARD INSTALLER   "
 echo "----------------------------------------"
 echo ""
 
-read -p "Start configuration wizard? (y/n): " CONFIRM
-[[ "$CONFIRM" != "y" ]] && echo "Cancelled." && exit 0
+read -p "Start N8N configuration wizard? (Y/n): " CONFIRM
+CONFIRM=${CONFIRM:-y}
+
+if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+    echo "Cancelled."
+    exit 0
+fi
 
 # ==============================
 # INSTALL DOCKER
@@ -99,8 +104,10 @@ run_bg "[3/6] Start Docker" bash -c "systemctl start docker || service docker st
 # INPUT
 # ==============================
 echo ""
+echo ""
 read -p "Enter domain: " DOMAIN
 
+echo ""
 echo ""
 echo "=== PostgreSQL ==="
 
@@ -116,7 +123,7 @@ while true; do
     POSTGRES_PASSWORD="$P1"
     break
 done
-
+echo ""
 read -p "POSTGRES_DB: " POSTGRES_DB
 read -p "POSTGRES_NON_ROOT_USER: " POSTGRES_NON_ROOT_USER
 
