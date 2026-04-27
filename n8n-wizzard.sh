@@ -3,7 +3,6 @@
 set -e
 
 MAIN_LOG="/var/log/n8n-install.log"
-DOCKER_LOG="/var/log/n8n-docker.log"
 
 exec > >(tee -a "$MAIN_LOG") 2>&1
 
@@ -163,7 +162,7 @@ echo "[OK] .env ready"
 # DOCKER START
 # ==============================
 echo "[...] Starting containers"
-docker compose up -d >> "$DOCKER_LOG" 2>&1 &
+docker compose up -d >> "$MAIN_LOG" 2>&1 &
 
 PID=$!
 SP='-\|/'
@@ -199,7 +198,7 @@ echo "[OK] PostgreSQL ready"
 # ==============================
 # ENSURE FINAL
 # ==============================
-docker compose up -d >> "$DOCKER_LOG" 2>&1
+docker compose up -d >> "$MAIN_LOG" 2>&1
 
 # ==============================
 # DONE
@@ -224,4 +223,3 @@ echo "/opt/n8n"
 echo ""
 echo "LOG:"
 echo "Main   : $MAIN_LOG"
-echo "Docker : $DOCKER_LOG"
