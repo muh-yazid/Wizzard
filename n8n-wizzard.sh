@@ -1,12 +1,15 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
 LOG_FILE="/var/log/n8n-install.log"
 DOCKER_LOG="/var/log/n8n-docker.log"
 
 exec > >(tee -a "$LOG_FILE") 2>&1
 
+# ==============================
+# SPINNER
+# ==============================
 spinner() {
     local pid=$1
     local spin='-\|/'
@@ -19,6 +22,9 @@ spinner() {
     printf "\r"
 }
 
+# ==============================
+# SAFE BACKGROUND RUNNER
+# ==============================
 run_step_bg() {
     DESC="$1"
     shift
@@ -32,9 +38,35 @@ run_step_bg() {
     PID=$!
 
     spinner $PID
-    wait $PID
 
-    echo "[OK] $DESC"
+    if wait $PID; then
+        echo "[OK] $DESC"
+    else
+        echo "[ERROR] $DESC gagal"
+        echo "[INFO] Check log: $LOG_FILE"
+        exit 1
+    fi
+}
+
+# ==============================
+# FOREGROUND STEP (WAJIB untuk critical)
+# ==============================
+run_step_fg() {
+    DESC="$1"
+    shift
+
+    echo ""
+    echo "======================================"
+    echo "[...] $DESC"
+    echo "======================================"
+
+    if "$@" | tee -a "$LOG_FILE"; then
+        echo "[OK] $DESC"
+    else
+        echo "[ERROR] $DESC gagal"
+        echo "[INFO] Check log: $LOG_FILE"
+        exit 1
+    fi
 }
 
 clear
@@ -49,18 +81,32 @@ read -p "Start wizard? (y/n): " CONFIRM
 [[ "$CONFIRM" != "y" ]] && exit 0
 
 # ==============================
-# WAIT APT LOCK
+# WAIT APT LOCK (PAKAI SPINNER)
 # ==============================
 echo "[INFO] Waiting apt lock..."
-while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 3; done
+
+(
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+        sleep 2
+    done
+) &
+
+spinner $!
+wait $!
+
+echo "[OK] apt ready"
 
 # ==============================
-# INSTALL DOCKER
+# INSTALL DOCKER (CRITICAL → FG)
 # ==============================
 run_step_bg "Download Docker" curl -fsSL https://get.docker.com -o get-docker.sh
-run_step_bg "Install Docker" sh get-docker.sh
 
+run_step_fg "Install Docker" sh get-docker.sh
+
+echo "[INFO] Starting Docker..."
 systemctl start docker || service docker start || true
+sleep 2
+echo "[OK] Docker ready"
 
 # ==============================
 # INPUT
@@ -95,8 +141,8 @@ POSTGRES_NON_ROOT_PASSWORD=$P1
 RUNNERS_AUTH_TOKEN=$(openssl rand -hex 16)
 
 INSTALL_DIR="/opt/n8n"
-mkdir -p $INSTALL_DIR
-cd $INSTALL_DIR
+mkdir -p "$INSTALL_DIR"
+cd "$INSTALL_DIR"
 
 # ==============================
 # CLONE REPO
@@ -108,6 +154,8 @@ IP=$(hostname -I | awk '{print $1}')
 # ==============================
 # ENV
 # ==============================
+echo "[INFO] Creating .env"
+
 cat <<EOF > .env
 POSTGRES_USER=$POSTGRES_USER
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
@@ -120,21 +168,25 @@ FQDN=$IP
 RUNNERS_AUTH_TOKEN=$RUNNERS_AUTH_TOKEN
 EOF
 
-# ==============================
-# START DOCKER
-# ==============================
-echo "[INFO] Starting containers..."
-docker compose up -d > "$DOCKER_LOG" 2>&1
+echo "[OK] .env ready"
 
 # ==============================
-# WAIT POSTGRES HEALTH
+# START DOCKER (CRITICAL → FG)
+# ==============================
+echo ""
+echo "[INFO] Starting containers..."
+
+docker compose up -d | tee -a "$DOCKER_LOG"
+
+# ==============================
+# WAIT POSTGRES
 # ==============================
 echo "[INFO] Waiting PostgreSQL..."
 
 for i in {1..40}; do
     STATUS=$(docker inspect --format='{{.State.Health.Status}}' n8n-postgres-1 2>/dev/null || echo "starting")
 
-    printf "\r[INFO] Postgres: %s (%d/40)" "$STATUS" "$i"
+    printf "\r[INFO] Postgres: %-10s (%d/40)" "$STATUS" "$i"
 
     [[ "$STATUS" == "healthy" ]] && break
     sleep 3
@@ -153,7 +205,8 @@ docker compose up -d >> "$DOCKER_LOG" 2>&1
 echo "[INFO] Waiting n8n..."
 
 for i in {1..40}; do
-    RUNNING=$(docker ps --format '{{.Names}}' | grep -c n8n-n8n-1)
+    RUNNING=$(docker ps --format '{{.Names}}' | grep -c n8n-n8n-1 || true)
+
     printf "\r[INFO] n8n: %d (%d/40)" "$RUNNING" "$i"
 
     [[ "$RUNNING" -ge 1 ]] && break
@@ -161,6 +214,14 @@ for i in {1..40}; do
 done
 
 echo ""
+
+# ==============================
+# CLEANUP (PINDAH KE AKHIR)
+# ==============================
+echo "[INFO] Cleaning up..."
+rm -f /root/get-docker.sh
+
+echo "[OK] Cleanup done"
 
 # ==============================
 # DONE
@@ -176,6 +237,10 @@ echo "IP     : http://$IP:5678"
 echo ""
 echo "TOKEN:"
 echo "$RUNNERS_AUTH_TOKEN"
+
+echo ""
+echo "PATH:"
+echo "$INSTALL_DIR"
 
 echo ""
 echo "LOG:"
