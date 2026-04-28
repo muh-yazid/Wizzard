@@ -1,4 +1,5 @@
 #!/bin/bash
+
 set -e
 
 MAIN_LOG="/var/log/n8n-install.log"
@@ -20,37 +21,37 @@ spinner() {
         printf "\r[INFO] %s... %s" "$msg" "${spin:$i:1}"
         sleep 0.2
     done
+
     printf "\r"
 }
 
 # ==============================
-# WAIT APT (REAL FIX)
+# WAIT APT (REAL SAFE)
 # ==============================
 wait_apt() {
     echo "[INFO] Preparing apt..."
 
-    (
-        while pgrep -x apt >/dev/null || \
-              pgrep -x apt-get >/dev/null || \
-              pgrep -x dpkg >/dev/null; do
-            sleep 2
-        done
+    while true; do
+        if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 && \
+           ! fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then
 
-        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
-              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
-            sleep 2
-        done
-    ) &
+            sleep 3
 
-    spinner $! "Waiting apt ready"
-    wait $!
+            if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+                break
+            fi
+        fi
 
+        printf "\r[INFO] Waiting apt lock... %s" "-\|/" 
+        sleep 2
+    done
+
+    echo ""
     echo "[OK] apt ready"
 }
 
 # ==============================
-# RUN WITH SPINNER
+# RUN STEP
 # ==============================
 run_step() {
     local MSG="$1"
@@ -72,26 +73,6 @@ run_step() {
 }
 
 # ==============================
-# DOCKER INSTALL SAFE
-# ==============================
-install_docker_safe() {
-    for attempt in 1 2 3; do
-        echo "[INFO] Installing Docker (attempt $attempt)..."
-
-        if sh get-docker.sh >> "$MAIN_LOG" 2>&1; then
-            echo "[OK] Docker installed"
-            return 0
-        fi
-
-        echo "[WARN] Install failed, retry..."
-        sleep 5
-    done
-
-    echo "[ERROR] Docker install failed"
-    exit 1
-}
-
-# ==============================
 # HEADER
 # ==============================
 clear
@@ -102,10 +83,11 @@ echo ""
 
 read -p "Start N8N configuration wizard? (Y/n): " CONFIRM
 CONFIRM=${CONFIRM:-y}
+
 [[ ! "$CONFIRM" =~ ^[Yy]$ ]] && echo "Cancelled." && exit 0
 
 # ==============================
-# STEP 1
+# STEP 1 - SYSTEM
 # ==============================
 echo ""
 echo "------------------------------------------"
@@ -117,14 +99,13 @@ wait_apt
 echo "[INFO] Download Docker..."
 curl -fsSL https://get.docker.com -o get-docker.sh >> "$MAIN_LOG" 2>&1
 
-install_docker_safe
-
+run_step "Installing Docker" sh get-docker.sh
 run_step "Starting Docker" bash -c "systemctl start docker || service docker start || true"
 
 echo "[OK] Docker ready"
 
 # ==============================
-# STEP 2
+# STEP 2 - INPUT
 # ==============================
 echo ""
 echo "------------------------------------------"
@@ -133,7 +114,6 @@ echo "------------------------------------------"
 echo ""
 
 read -p "Domain: " DOMAIN
-
 read -p "POSTGRES_USER: " POSTGRES_USER
 
 while true; do
@@ -159,7 +139,7 @@ RUNNERS_AUTH_TOKEN=$(openssl rand -hex 16)
 INSTALL_DIR="/opt/n8n"
 
 # ==============================
-# STEP 3
+# STEP 3 - ENV
 # ==============================
 echo ""
 echo "------------------------------------------"
@@ -186,86 +166,60 @@ EOF
 
 echo "[OK] Config ready"
 
-# kasih delay biar postgres init stabil
-sleep 5
-
 # ==============================
-# STEP 4
+# STEP 4 - START POSTGRES ONLY
 # ==============================
 echo ""
 echo "------------------------------------------"
-echo "[STEP 4/5] Starting containers"
+echo "[STEP 4/5] Start PostgreSQL"
 echo "------------------------------------------"
 
-docker compose up -d >> "$DOCKER_LOG" 2>&1 &
-spinner $! "Deploying containers"
+docker compose up -d postgres >> "$DOCKER_LOG" 2>&1 &
+spinner $! "Starting PostgreSQL"
 wait $!
 
-echo "[OK] Containers created"
+echo "[OK] PostgreSQL container started"
 
 # ==============================
-# WAIT POSTGRES (FIX TOTAL)
+# WAIT POSTGRES HEALTH (FIX UTAMA)
 # ==============================
-echo "[INFO] Waiting PostgreSQL..."
+echo "[INFO] Waiting PostgreSQL healthy..."
 
-POSTGRES_CONTAINER=$(docker ps -a --format '{{.Names}}' | grep postgres | head -n1)
+while true; do
+    STATUS=$(docker inspect --format='{{.State.Health.Status}}' n8n-postgres-1 2>/dev/null || echo "starting")
 
-HEALTH_OK_COUNT=0
+    printf "\r[INFO] Postgres status: %-10s" "$STATUS"
 
-for i in {1..60}; do
-    STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$POSTGRES_CONTAINER" 2>/dev/null || echo "starting")
-
-    printf "\r[INFO] Postgres: %-10s" "$STATUS"
-
-    if [[ "$STATUS" == "healthy" ]]; then
-        HEALTH_OK_COUNT=$((HEALTH_OK_COUNT+1))
-    else
-        HEALTH_OK_COUNT=0
-    fi
-
-    [[ $HEALTH_OK_COUNT -ge 3 ]] && break
-
+    [[ "$STATUS" == "healthy" ]] && break
     sleep 2
 done
 
 echo ""
-
-# fallback retry kalau belum stabil
-if [[ $HEALTH_OK_COUNT -lt 3 ]]; then
-    echo "[WARN] PostgreSQL belum stabil, restart..."
-
-    docker restart "$POSTGRES_CONTAINER" >> "$DOCKER_LOG" 2>&1
-    sleep 5
-
-    for i in {1..30}; do
-        STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$POSTGRES_CONTAINER" 2>/dev/null || echo "starting")
-
-        printf "\r[INFO] Retry Postgres: %-10s" "$STATUS"
-
-        [[ "$STATUS" == "healthy" ]] && break
-        sleep 2
-    done
-
-    echo ""
-fi
-
 echo "[OK] PostgreSQL ready"
 
 # ==============================
-# STEP 5
+# STEP 5 - START ALL
 # ==============================
 echo ""
 echo "------------------------------------------"
-echo "[STEP 5/5] Finalizing"
+echo "[STEP 5/5] Starting N8N"
 echo "------------------------------------------"
 
-docker compose up -d >> "$DOCKER_LOG" 2>&1
+docker compose up -d >> "$DOCKER_LOG" 2>&1 &
+spinner $! "Starting n8n services"
+wait $!
 
+echo "[OK] Containers started"
+
+# ==============================
+# WAIT N8N
+# ==============================
 echo "[INFO] Waiting n8n..."
 
-for i in {1..60}; do
+while true; do
     RUNNING=$(docker ps --format '{{.Names}}' | grep -c n8n || true)
-    printf "\r[INFO] n8n: %d" "$RUNNING"
+
+    printf "\r[INFO] n8n containers: %d" "$RUNNING"
 
     [[ "$RUNNING" -ge 2 ]] && break
     sleep 2
@@ -273,10 +227,6 @@ done
 
 echo ""
 echo "[OK] n8n running"
-
-echo ""
-echo "[INFO] Container status:"
-docker ps
 
 # ==============================
 # DONE
