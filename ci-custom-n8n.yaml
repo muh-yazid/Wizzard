@@ -3,57 +3,66 @@ package_update: false
 package_upgrade: false
 
 write_files:
-  # ==============================
-  # BOOTSTRAP SCRIPT (BASE64)
-  # ==============================
   - path: /root/setup-vm.sh
     permissions: '0755'
     encoding: b64
     content: |
-      BASE64_KAMU_DI_SINI
+      IyEvYmluL2Jhc2gKc2V0IC1lCgpVUkxfU0NSSVBUPSJodHRwczovL3Jhdy5naXRodWJ1c2VyY29udGVudC5jb20vS25vd0xlZFovV2l6emFyZC9tYWluL244bi13aXp6YXJkLnNoIgoKZWNobyAiPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0iCmVjaG8gIiAgICAgTjhOIEJPT1RTVFJBUCBJTklUSUFMSVpFUiIKZWNobyAiPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0iCmVjaG8gIiIKCmVjaG8gIltJTkZPXSBEb3dubG9hZGluZyBpbnN0YWxsZXIuLi4iCmN1cmwgLUwgLWYgIiRVUkxfU0NSSVBUIiAtbyAvcm9vdC9uOG4taW5zdGFsbGVyLnNoCgpjaG1vZCAreCAvcm9vdC9uOG4taW5zdGFsbGVyLnNoCgplY2hvICJbT0tdIEluc3RhbGxlciBkb3dubG9hZGVkIgplY2hvICIiCgplY2hvICJbSU5GT10gUnVubmluZyBpbnN0YWxsZXIuLi4iCmVjaG8gIiIKCiMg4pyFIEJMT0NLSU5HIChXQUpJQiwgc3VwYXlhIHRpZGFrIGxhbmp1dCBzZWJlbHVtIHNlbGVzYWkpCmV4ZWMgYmFzaCAvcm9vdC9uOG4taW5zdGFsbGVyLnNo
 
-  # ==============================
-  # AUTO RUN SAAT LOGIN ROOT
-  # ==============================
-  - path: /etc/profile.d/n8n-wizard.sh
+  - path: /etc/profile.d/n8n-first-login.sh
     permissions: '0755'
     content: |
       #!/bin/bash
 
-      # hanya untuk root
-      if [ "$USER" != "root" ]; then
-          return
-      fi
-
-      # hanya jalan sekali
-      if [ -f /root/.n8n_installed ]; then
-          return
-      fi
+      [ "$USER" != "root" ] && return
+      [ -f /root/.n8n_installed ] && return
 
       clear
       echo "======================================"
       echo "      N8N FIRST LOGIN INSTALLER"
       echo "======================================"
       echo ""
-      echo "[INFO] Installer akan berjalan..."
-      echo "[INFO] Mohon tunggu sampai selesai"
+
+      echo "[INFO] Menjalankan installer..."
       echo ""
 
-      # jalankan installer (foreground biar kelihatan)
+      # 🚨 BLOCKING (WAJIB)
       bash /root/setup-vm.sh
+      STATUS=$?
 
-      # tandai selesai
+      if [ $STATUS -ne 0 ]; then
+          echo "[ERROR] Installer gagal!"
+          echo "[INFO] Cek log di /var/log/"
+          return
+      fi
+
+      echo ""
+      echo "[INFO] Verifikasi service n8n..."
+
+      for i in {1..60}; do
+          RUNNING=$(docker ps --format '{{.Names}}' | grep -c n8n || true)
+
+          if [ "$RUNNING" -ge 1 ]; then
+              echo "[OK] n8n sudah running"
+              break
+          fi
+
+          echo "[WAIT] n8n belum ready ($i/60)"
+          sleep 2
+      done
+
+      if ! ss -lnt | grep -q ":5678"; then
+          echo "[WARNING] Port 5678 belum terbuka!"
+          return
+      fi
+
+      # ✅ MARK DONE (SETELAH BENAR2 SELESAI)
       touch /root/.n8n_installed
 
-      echo ""
-      echo "[CLEANUP] Menghapus file installer..."
-      
+      # ✅ CLEANUP DI AKHIR (INI YANG SEBELUMNYA SALAH POSISI)
       rm -f /root/setup-vm.sh
       rm -f /root/get-docker.sh
       rm -f /root/n8n-installer.sh
 
-      echo "[OK] Cleanup selesai"
-
       echo ""
-      echo "[INFO] Installation finished. Script will not run again."
-      echo ""
+      echo "[INFO] Installation N8N finished"
