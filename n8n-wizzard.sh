@@ -26,10 +26,10 @@ spinner() {
 }
 
 # ==============================
-# WAIT APT (SPINNER)
+# WAIT APT
 # ==============================
 wait_apt() {
-    echo "[INFO] Preparing apt (production-safe)..."
+    echo "[INFO] Preparing apt..."
 
     (
         sleep 5
@@ -39,7 +39,9 @@ wait_apt() {
         done
     ) &
 
-    spinner $! "Waiting apt lock"
+    PID=$!
+    spinner $PID "Waiting apt lock"
+    wait $PID
 
     echo "[OK] apt ready"
 }
@@ -94,7 +96,6 @@ echo "[INFO] Download Docker..."
 curl -fsSL https://get.docker.com -o get-docker.sh >> "$MAIN_LOG" 2>&1
 
 run_step "Installing Docker" sh get-docker.sh
-
 run_step "Starting Docker" bash -c "systemctl start docker || service docker start || true"
 
 echo "[OK] Docker ready"
@@ -171,15 +172,24 @@ echo "[STEP 4/5] Starting containers"
 echo "------------------------------------------"
 
 docker compose up -d >> "$DOCKER_LOG" 2>&1 &
-spinner $! "Deploying containers"
-wait $!
+PID=$!
+spinner $PID "Deploying containers"
+wait $PID
 
 echo "[OK] Containers created"
 
+# WAIT postgres (safe)
+POSTGRES_CONTAINER=""
+for i in {1..10}; do
+    POSTGRES_CONTAINER=$(docker ps -a --format '{{.Names}}' | grep postgres | head -n1)
+    [[ -n "$POSTGRES_CONTAINER" ]] && break
+    sleep 2
+done
+
+echo "[INFO] Waiting PostgreSQL..."
+
 for i in {1..60}; do
-    STATUS=$(docker inspect --format='{{.State.Health.Status}}' \
-        $(docker ps -a --format '{{.Names}}' | grep postgres | head -n1) \
-        2>/dev/null || echo "starting")
+    STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$POSTGRES_CONTAINER" 2>/dev/null || echo "starting")
 
     printf "\r[INFO] Postgres: %-10s (%d/60)" "$STATUS" "$i"
 
@@ -191,7 +201,7 @@ echo ""
 echo "[OK] PostgreSQL ready"
 
 # ==============================
-# STEP 6
+# STEP 5
 # ==============================
 echo ""
 echo "------------------------------------------"
@@ -201,10 +211,11 @@ echo "------------------------------------------"
 docker compose up -d >> "$DOCKER_LOG" 2>&1
 
 for i in {1..60}; do
-    RUNNING=$(docker ps --format '{{.Names}}' | grep -c n8n || true)
-    printf "\r[INFO] n8n: %d (%d/60)" "$RUNNING" "$i"
+    RUNNING=$(docker ps --filter "status=running" --format '{{.Names}}' | grep -c n8n || true)
 
-    [[ "$RUNNING" -ge 2 ]] && break
+    printf "\r[INFO] n8n running: %d (%d/60)" "$RUNNING" "$i"
+
+    [[ "$RUNNING" -ge 1 ]] && break
     sleep 2
 done
 
