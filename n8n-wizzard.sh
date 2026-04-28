@@ -26,7 +26,7 @@ spinner() {
 }
 
 # ==============================
-# RUN BACKGROUND STEP
+# RUN BG
 # ==============================
 run_bg() {
     STEP="$1"
@@ -34,7 +34,7 @@ run_bg() {
 
     echo ""
     echo "======================================"
-    echo "[...] $STEP"
+    echo "$STEP"
     echo "======================================"
 
     "$@" >> "$MAIN_LOG" 2>&1 &
@@ -56,7 +56,7 @@ run_bg() {
 }
 
 # ==============================
-# WAIT APT LOCK (FIXED)
+# WAIT APT
 # ==============================
 wait_apt() {
     SP='-\|/'
@@ -79,64 +79,49 @@ wait_apt() {
 # ==============================
 clear
 echo "----------------------------------------"
-echo "   N8N WIZARD INSTALLER   "
+echo "   N8N WIZARD INSTALLER"
 echo "----------------------------------------"
-echo ""
 
 read -p "Start N8N configuration wizard? (Y/n): " CONFIRM
 CONFIRM=${CONFIRM:-y}
-
-if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-    echo "Cancelled."
-    exit 0
-fi
+[[ ! "$CONFIRM" =~ ^[Yy]$ ]] && exit 0
 
 # ==============================
-# INSTALL DOCKER
+# 1. INSTALL DOCKER
 # ==============================
 wait_apt
 
-run_bg "[1/6] Download Docker" curl -fsSL https://get.docker.com -o get-docker.sh
-run_bg "[2/6] Install Docker" sh get-docker.sh
-run_bg "[3/6] Start Docker" bash -c "systemctl start docker || service docker start || true"
+run_bg "[1/10] Download Docker" curl -fsSL https://get.docker.com -o get-docker.sh
+run_bg "[2/10] Install Docker" sh get-docker.sh
+run_bg "[3/10] Start Docker" bash -c "systemctl start docker || service docker start || true"
 
 # ==============================
-# INPUT
+# 2. INPUT
 # ==============================
 echo ""
-echo ""
-read -p "Enter domain: " DOMAIN
+read -p "[4/10] Domain: " DOMAIN
 
-echo ""
-echo ""
 echo "=== PostgreSQL ==="
-
 read -p "POSTGRES_USER: " POSTGRES_USER
 
 while true; do
     read -s -p "POSTGRES_PASSWORD: " P1; echo ""
-    read -s -p "Re-enter POSTGRES_PASSWORD: " P2; echo ""
-
-    [[ "$P1" != "$P2" ]] && echo "[ERROR] Not match!" && continue
-    [[ -z "$P1" ]] && echo "[ERROR] Empty!" && continue
-
-    POSTGRES_PASSWORD="$P1"
-    break
+    read -s -p "Re-enter: " P2; echo ""
+    [[ "$P1" == "$P2" && -n "$P1" ]] && break
+    echo "[ERROR] Password mismatch"
 done
-echo ""
+POSTGRES_PASSWORD=$P1
+
 read -p "POSTGRES_DB: " POSTGRES_DB
 read -p "POSTGRES_NON_ROOT_USER: " POSTGRES_NON_ROOT_USER
 
 while true; do
     read -s -p "POSTGRES_NON_ROOT_PASSWORD: " P1; echo ""
-    read -s -p "Re-enter POSTGRES_NON_ROOT_PASSWORD: " P2; echo ""
-
-    [[ "$P1" != "$P2" ]] && echo "[ERROR] Not match!" && continue
-    [[ -z "$P1" ]] && echo "[ERROR] Empty!" && continue
-
-    POSTGRES_NON_ROOT_PASSWORD="$P1"
-    break
+    read -s -p "Re-enter: " P2; echo ""
+    [[ "$P1" == "$P2" && -n "$P1" ]] && break
+    echo "[ERROR] Password mismatch"
 done
+POSTGRES_NON_ROOT_PASSWORD=$P1
 
 [[ -z "$POSTGRES_USER" || -z "$POSTGRES_DB" ]] && echo "[ERROR] Required field kosong!" && exit 1
 
@@ -144,62 +129,49 @@ RUNNERS_AUTH_TOKEN=$(openssl rand -hex 16)
 INSTALL_DIR="/opt/n8n"
 
 # ==============================
-# PREPARE
+# 3. PREPARE
 # ==============================
-run_bg "[4/6] Prepare directory" mkdir -p "$INSTALL_DIR"
+run_bg "[5/10] Prepare directory" mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-run_bg "[5/6] Clone repo" git clone https://github.com/KnowLedZ/n8n-http.git . || true
+run_bg "[6/10] Clone repo" git clone https://github.com/KnowLedZ/n8n-http.git . || true
 
 # ==============================
-# ENV
+# 4. ENV
 # ==============================
 IP=$(hostname -I | awk '{print $1}')
 
-echo "[...] Creating .env"
-
 cat <<EOF > .env
 N8N_VERSION=stable
-
 POSTGRES_USER=$POSTGRES_USER
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 POSTGRES_DB=$POSTGRES_DB
-
 POSTGRES_NON_ROOT_USER=$POSTGRES_NON_ROOT_USER
 POSTGRES_NON_ROOT_PASSWORD=$POSTGRES_NON_ROOT_PASSWORD
-
 RUNNERS_AUTH_TOKEN=$RUNNERS_AUTH_TOKEN
-
 FQDN=$IP
 EOF
 
 echo "[OK] .env ready"
 
 # ==============================
-# START DOCKER (FIX UTAMA)
+# 5. START DOCKER
 # ==============================
-echo ""
-echo "[...] Starting containers"
-
-docker compose up -d >> "$DOCKER_LOG" 2>&1
-echo "[OK] Containers created"
+run_bg "[7/10] Starting containers" docker compose up -d
 
 # ==============================
-# WAIT POSTGRES (REAL PROGRESS)
+# 6. WAIT POSTGRES (FIXED)
 # ==============================
-echo "[INFO] Waiting PostgreSQL..."
+echo "[8/10] Waiting PostgreSQL..."
+
+POSTGRES_CONTAINER=$(docker ps -a --format '{{.Names}}' | grep postgres | head -n1)
 
 for i in {1..60}; do
-    STATUS=$(docker inspect --format='{{.State.Health.Status}}' \
-        $(docker ps -a --format '{{.Names}}' | grep postgres | head -n1) \
-        2>/dev/null || echo "starting")
+    STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$POSTGRES_CONTAINER" 2>/dev/null || echo "starting")
 
     printf "\r[INFO] Postgres: %-10s (%d/60)" "$STATUS" "$i"
 
-    if [[ "$STATUS" == "healthy" ]]; then
-        break
-    fi
-
+    [[ "$STATUS" == "healthy" ]] && break
     sleep 2
 done
 
@@ -207,25 +179,33 @@ echo ""
 echo "[OK] PostgreSQL ready"
 
 # ==============================
-# FINAL ENSURE
+# 7. WAIT N8N PORT (FIX UTAMA)
 # ==============================
-docker compose up -d >> "$DOCKER_LOG" 2>&1
-
-# ==============================
-# WAIT N8N
-# ==============================
-echo "[INFO] Waiting n8n..."
+echo "[9/10] Waiting n8n (port 5678)..."
 
 for i in {1..60}; do
-    RUNNING=$(docker ps --format '{{.Names}}' | grep -c n8n || true)
+    if ss -lnt | grep -q ":5678"; then
+        echo "[OK] n8n port ready"
+        break
+    fi
 
-    printf "\r[INFO] n8n: %d (%d/60)" "$RUNNING" "$i"
-
-    [[ "$RUNNING" -ge 1 ]] && break
+    printf "\r[INFO] Waiting n8n port... (%d/60)" "$i"
     sleep 2
 done
 
 echo ""
+
+# ==============================
+# 8. VERIFY CONTAINER
+# ==============================
+RUNNING=$(docker ps --format '{{.Names}}' | grep -c n8n || true)
+
+if [ "$RUNNING" -lt 1 ]; then
+    echo "[ERROR] n8n container tidak jalan!"
+    echo "[INFO] Cek: docker ps -a"
+    exit 1
+fi
+
 echo "[OK] n8n running"
 
 # ==============================
@@ -236,7 +216,6 @@ echo "======================================"
 echo "        INSTALLATION COMPLETE"
 echo "======================================"
 
-echo "URL:"
 echo "Domain : http://$DOMAIN"
 echo "IP     : http://$IP:5678"
 
