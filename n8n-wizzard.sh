@@ -8,44 +8,62 @@ DOCKER_LOG="/var/log/n8n-docker.log"
 exec > >(tee -a "$MAIN_LOG") 2>&1
 
 # ==============================
-# PROGRESS BAR
+# SPINNER
 # ==============================
-progress_bar() {
-    local duration=$1
+spinner() {
+    local pid=$1
     local msg=$2
+    local spin='-\|/'
+    local i=0
 
-    echo "[INFO] $msg"
-
-    for ((i=1;i<=duration;i++)); do
-        percent=$(( i * 100 / duration ))
-        filled=$(( percent / 2 ))
-        empty=$((50 - filled))
-
-        printf "\r[%-50s] %3d%%" \
-        "$(printf "%${filled}s" | tr ' ' '#')$(printf "%${empty}s")" \
-        "$percent"
-
+    while kill -0 $pid 2>/dev/null; do
+        i=$(( (i+1) %4 ))
+        printf "\r[INFO] %s... %s" "$msg" "${spin:$i:1}"
         sleep 0.2
     done
 
-    echo ""
+    printf "\r"
 }
 
 # ==============================
-# WAIT APT (SAFE)
+# WAIT APT (SPINNER)
 # ==============================
 wait_apt() {
     echo "[INFO] Preparing apt (production-safe)..."
 
-    sleep 5
+    (
+        sleep 5
+        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+              fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+            sleep 2
+        done
+    ) &
 
-    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-          fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
-        echo "[WAIT] apt locked... retry"
-        sleep 3
-    done
+    spinner $! "Waiting apt lock"
 
     echo "[OK] apt ready"
+}
+
+# ==============================
+# RUN WITH SPINNER
+# ==============================
+run_step() {
+    local MSG="$1"
+    shift
+
+    "$@" >> "$MAIN_LOG" 2>&1 &
+    PID=$!
+
+    spinner $PID "$MSG"
+    wait $PID
+
+    if [ $? -ne 0 ]; then
+        echo "[ERROR] $MSG failed!"
+        echo "[INFO] Check log: $MAIN_LOG"
+        exit 1
+    fi
+
+    echo "[OK] $MSG"
 }
 
 # ==============================
@@ -63,11 +81,11 @@ CONFIRM=${CONFIRM:-y}
 [[ ! "$CONFIRM" =~ ^[Yy]$ ]] && echo "Cancelled." && exit 0
 
 # ==============================
-# STEP 1 - SYSTEM
+# STEP 1
 # ==============================
 echo ""
 echo "------------------------------------------"
-echo "[STEP 1/6] Prepare system"
+echo "[STEP 1/5] Prepare system"
 echo "------------------------------------------"
 
 wait_apt
@@ -75,26 +93,18 @@ wait_apt
 echo "[INFO] Download Docker..."
 curl -fsSL https://get.docker.com -o get-docker.sh >> "$MAIN_LOG" 2>&1
 
-progress_bar 20 "Preparing Docker install"
+run_step "Installing Docker" sh get-docker.sh
 
-for i in {1..3}; do
-    echo "[INFO] Install Docker attempt $i..."
-    if sh get-docker.sh >> "$MAIN_LOG" 2>&1; then
-        echo "[OK] Docker installed"
-        break
-    fi
-    sleep 5
-done
+run_step "Starting Docker" bash -c "systemctl start docker || service docker start || true"
 
-systemctl start docker || service docker start || true
 echo "[OK] Docker ready"
 
 # ==============================
-# STEP 2 - INPUT
+# STEP 2
 # ==============================
 echo ""
 echo "------------------------------------------"
-echo "[STEP 2/6] Configuration setup"
+echo "[STEP 2/5] Configuration setup"
 echo "------------------------------------------"
 echo ""
 
@@ -125,18 +135,17 @@ RUNNERS_AUTH_TOKEN=$(openssl rand -hex 16)
 INSTALL_DIR="/opt/n8n"
 
 # ==============================
-# STEP 3 - PREPARE
+# STEP 3
 # ==============================
 echo ""
 echo "------------------------------------------"
-echo "[STEP 3/6] Prepare environment"
+echo "[STEP 3/5] Prepare environment"
 echo "------------------------------------------"
 
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-echo "[INFO] Cloning repo..."
-git clone https://github.com/KnowLedZ/n8n-http.git . >> "$MAIN_LOG" 2>&1 || true
+run_step "Cloning repository" git clone https://github.com/KnowLedZ/n8n-http.git . || true
 
 IP=$(hostname -I | awk '{print $1}')
 
@@ -154,34 +163,18 @@ EOF
 echo "[OK] Config ready"
 
 # ==============================
-# STEP 4 - START CONTAINER
+# STEP 4
 # ==============================
 echo ""
 echo "------------------------------------------"
-echo "[STEP 4/6] Starting containers"
+echo "[STEP 4/5] Starting containers"
 echo "------------------------------------------"
 
 docker compose up -d >> "$DOCKER_LOG" 2>&1 &
+spinner $! "Deploying containers"
+wait $!
 
-PID=$!
-
-for i in {1..40}; do
-    percent=$(( i * 100 / 40 ))
-    printf "\r[INFO] Deploying containers... %d%%" "$percent"
-    sleep 0.5
-done
-
-wait $PID
-echo ""
 echo "[OK] Containers created"
-
-# ==============================
-# STEP 5 - WAIT POSTGRES
-# ==============================
-echo ""
-echo "------------------------------------------"
-echo "[STEP 5/6] Waiting PostgreSQL"
-echo "------------------------------------------"
 
 for i in {1..60}; do
     STATUS=$(docker inspect --format='{{.State.Health.Status}}' \
@@ -198,11 +191,11 @@ echo ""
 echo "[OK] PostgreSQL ready"
 
 # ==============================
-# STEP 6 - WAIT N8N
+# STEP 6
 # ==============================
 echo ""
 echo "------------------------------------------"
-echo "[STEP 6/6] Finalizing"
+echo "[STEP 5/5] Finalizing"
 echo "------------------------------------------"
 
 docker compose up -d >> "$DOCKER_LOG" 2>&1
@@ -232,7 +225,7 @@ echo "======================================"
 
 echo "URL:"
 echo "Domain : http://$DOMAIN"
-echo "IP      : http://$IP:5678"
+echo "IP     : http://$IP:5678"
 
 echo ""
 echo "TOKEN:"
