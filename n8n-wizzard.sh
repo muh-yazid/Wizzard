@@ -12,76 +12,40 @@ exec > >(tee -a "$MAIN_LOG") 2>&1
 # ==============================
 progress_bar() {
     local duration=$1
-    local msg="$2"
+    local msg=$2
 
-    local elapsed=0
-    local width=30
+    echo "[INFO] $msg"
 
-    while [ $elapsed -lt $duration ]; do
-        local percent=$(( elapsed * 100 / duration ))
-        local filled=$(( percent * width / 100 ))
-        local empty=$(( width - filled ))
+    for ((i=1;i<=duration;i++)); do
+        percent=$(( i * 100 / duration ))
+        filled=$(( percent / 2 ))
+        empty=$((50 - filled))
 
-        printf "\r[INFO] %-25s [" "$msg"
-        printf "%0.s#" $(seq 1 $filled)
-        printf "%0.s-" $(seq 1 $empty)
-        printf "] %d%%" "$percent"
+        printf "\r[%-50s] %3d%%" \
+        "$(printf "%${filled}s" | tr ' ' '#')$(printf "%${empty}s")" \
+        "$percent"
 
-        sleep 1
-        elapsed=$((elapsed+1))
-    done
-
-    printf "\r[OK] %-25s\n" "$msg"
-}
-
-# ==============================
-# WAIT APT (PRODUCTION SAFE)
-# ==============================
-wait_apt_stable() {
-    echo "[INFO] Preparing apt (production-safe)..."
-
-    # stop auto apt sementara
-    systemctl stop apt-daily.service 2>/dev/null || true
-    systemctl stop apt-daily-upgrade.service 2>/dev/null || true
-    systemctl kill --kill-who=all apt-daily.service 2>/dev/null || true
-    systemctl kill --kill-who=all apt-daily-upgrade.service 2>/dev/null || true
-
-    # tunggu lock hilang
-    for i in {1..30}; do
-        if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 && \
-           ! fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then
-            echo "[OK] apt ready"
-            return
-        fi
-
-        printf "\r[INFO] Waiting apt lock... (%d/30)" "$i"
-        sleep 1
+        sleep 0.2
     done
 
     echo ""
-    echo "[ERROR] apt masih terkunci!"
-    exit 1
 }
 
 # ==============================
-# INSTALL DOCKER (RETRY)
+# WAIT APT (SAFE)
 # ==============================
-install_docker() {
-    for i in {1..3}; do
-        echo "[INFO] Install Docker attempt $i..."
+wait_apt() {
+    echo "[INFO] Preparing apt (production-safe)..."
 
-        if sh get-docker.sh >> "$MAIN_LOG" 2>&1; then
-            echo "[OK] Docker installed"
-            return
-        fi
+    sleep 5
 
-        echo "[WARN] Retry install Docker..."
-        sleep 5
-        wait_apt_stable
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+          fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+        echo "[WAIT] apt locked... retry"
+        sleep 3
     done
 
-    echo "[ERROR] Docker install failed"
-    exit 1
+    echo "[OK] apt ready"
 }
 
 # ==============================
@@ -94,38 +58,48 @@ echo "=========================================="
 echo ""
 
 read -p "Start N8N configuration wizard? (Y/n): " CONFIRM
-CONFIRM=${CONFIRM:-Y}
-[[ ! "$CONFIRM" =~ ^[Yy]$ ]] && exit 0
+CONFIRM=${CONFIRM:-y}
+
+[[ ! "$CONFIRM" =~ ^[Yy]$ ]] && echo "Cancelled." && exit 0
 
 # ==============================
-# STEP 1 SYSTEM
+# STEP 1 - SYSTEM
 # ==============================
 echo ""
 echo "------------------------------------------"
 echo "[STEP 1/6] Prepare system"
 echo "------------------------------------------"
 
-wait_apt_stable
+wait_apt
 
 echo "[INFO] Download Docker..."
 curl -fsSL https://get.docker.com -o get-docker.sh >> "$MAIN_LOG" 2>&1
 
-progress_bar 3 "Preparing Docker install"
+progress_bar 20 "Preparing Docker install"
 
-install_docker
+for i in {1..3}; do
+    echo "[INFO] Install Docker attempt $i..."
+    if sh get-docker.sh >> "$MAIN_LOG" 2>&1; then
+        echo "[OK] Docker installed"
+        break
+    fi
+    sleep 5
+done
 
 systemctl start docker || service docker start || true
 echo "[OK] Docker ready"
 
 # ==============================
-# STEP 2 INPUT
+# STEP 2 - INPUT
 # ==============================
 echo ""
 echo "------------------------------------------"
 echo "[STEP 2/6] Configuration setup"
 echo "------------------------------------------"
+echo ""
 
 read -p "Domain: " DOMAIN
+
 read -p "POSTGRES_USER: " POSTGRES_USER
 
 while true; do
@@ -148,16 +122,16 @@ done
 POSTGRES_NON_ROOT_PASSWORD=$P1
 
 RUNNERS_AUTH_TOKEN=$(openssl rand -hex 16)
+INSTALL_DIR="/opt/n8n"
 
 # ==============================
-# STEP 3 PREPARE
+# STEP 3 - PREPARE
 # ==============================
 echo ""
 echo "------------------------------------------"
 echo "[STEP 3/6] Prepare environment"
 echo "------------------------------------------"
 
-INSTALL_DIR="/opt/n8n"
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
@@ -168,22 +142,19 @@ IP=$(hostname -I | awk '{print $1}')
 
 cat <<EOF > .env
 N8N_VERSION=stable
-
 POSTGRES_USER=$POSTGRES_USER
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 POSTGRES_DB=$POSTGRES_DB
 POSTGRES_NON_ROOT_USER=$POSTGRES_NON_ROOT_USER
 POSTGRES_NON_ROOT_PASSWORD=$POSTGRES_NON_ROOT_PASSWORD
-
 RUNNERS_AUTH_TOKEN=$RUNNERS_AUTH_TOKEN
-
 FQDN=$IP
 EOF
 
 echo "[OK] Config ready"
 
 # ==============================
-# STEP 4 START CONTAINER
+# STEP 4 - START CONTAINER
 # ==============================
 echo ""
 echo "------------------------------------------"
@@ -191,11 +162,13 @@ echo "[STEP 4/6] Starting containers"
 echo "------------------------------------------"
 
 docker compose up -d >> "$DOCKER_LOG" 2>&1 &
+
 PID=$!
 
-for i in {1..20}; do
-    printf "\r[INFO] Deploying containers... (%d/20)" "$i"
-    sleep 1
+for i in {1..40}; do
+    percent=$(( i * 100 / 40 ))
+    printf "\r[INFO] Deploying containers... %d%%" "$percent"
+    sleep 0.5
 done
 
 wait $PID
@@ -203,7 +176,7 @@ echo ""
 echo "[OK] Containers created"
 
 # ==============================
-# STEP 5 WAIT POSTGRES
+# STEP 5 - WAIT POSTGRES
 # ==============================
 echo ""
 echo "------------------------------------------"
@@ -225,22 +198,25 @@ echo ""
 echo "[OK] PostgreSQL ready"
 
 # ==============================
-# STEP 6 WAIT N8N
+# STEP 6 - WAIT N8N
 # ==============================
 echo ""
 echo "------------------------------------------"
 echo "[STEP 6/6] Finalizing"
 echo "------------------------------------------"
 
-for i in {1..60}; do
-    if ss -lnt | grep -q ":5678"; then
-        echo "[OK] n8n ready"
-        break
-    fi
+docker compose up -d >> "$DOCKER_LOG" 2>&1
 
-    printf "\r[INFO] Waiting n8n port... (%d/60)" "$i"
+for i in {1..60}; do
+    RUNNING=$(docker ps --format '{{.Names}}' | grep -c n8n || true)
+    printf "\r[INFO] n8n: %d (%d/60)" "$RUNNING" "$i"
+
+    [[ "$RUNNING" -ge 2 ]] && break
     sleep 2
 done
+
+echo ""
+echo "[OK] n8n running"
 
 echo ""
 echo "[INFO] Container status:"
@@ -256,7 +232,7 @@ echo "======================================"
 
 echo "URL:"
 echo "Domain : http://$DOMAIN"
-echo "IP     : http://$IP:5678"
+echo "IP      : http://$IP:5678"
 
 echo ""
 echo "TOKEN:"
