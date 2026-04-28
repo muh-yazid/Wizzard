@@ -8,45 +8,47 @@ DOCKER_LOG="/var/log/n8n-docker.log"
 exec > >(tee -a "$MAIN_LOG") 2>&1
 
 # ==============================
-# SPINNER
+# SPINNER (FIXED)
 # ==============================
 spinner() {
     local pid=$1
-    local msg=$2
-    local spin='-\|/'
+    local msg="$2"
+    local spin=('|' '/' '-' '\')
     local i=0
 
     while kill -0 $pid 2>/dev/null; do
+        printf "\r[INFO] %s... %s " "$msg" "${spin[$i]}"
         i=$(( (i+1) %4 ))
-        printf "\r[INFO] %s... %s" "$msg" "${spin:$i:1}"
         sleep 0.2
     done
 
-    printf "\r"
+    printf "\r\033[K"
 }
 
 # ==============================
-# WAIT APT (REAL SAFE)
+# WAIT APT (NO GLITCH)
 # ==============================
 wait_apt() {
     echo "[INFO] Preparing apt..."
 
-    while true; do
-        if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 && \
-           ! fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then
+    (
+        while true; do
+            if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 && \
+               ! fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then
 
-            sleep 3
+                sleep 3
 
-            if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
-                break
+                if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+                    break
+                fi
             fi
-        fi
+            sleep 1
+        done
+    ) &
 
-        printf "\r[INFO] Waiting apt lock... %s" "-\|/" 
-        sleep 2
-    done
+    spinner $! "Waiting apt lock"
+    wait $!
 
-    echo ""
     echo "[OK] apt ready"
 }
 
@@ -87,7 +89,7 @@ CONFIRM=${CONFIRM:-y}
 [[ ! "$CONFIRM" =~ ^[Yy]$ ]] && echo "Cancelled." && exit 0
 
 # ==============================
-# STEP 1 - SYSTEM
+# STEP 1
 # ==============================
 echo ""
 echo "------------------------------------------"
@@ -105,7 +107,7 @@ run_step "Starting Docker" bash -c "systemctl start docker || service docker sta
 echo "[OK] Docker ready"
 
 # ==============================
-# STEP 2 - INPUT
+# STEP 2
 # ==============================
 echo ""
 echo "------------------------------------------"
@@ -139,7 +141,7 @@ RUNNERS_AUTH_TOKEN=$(openssl rand -hex 16)
 INSTALL_DIR="/opt/n8n"
 
 # ==============================
-# STEP 3 - ENV
+# STEP 3
 # ==============================
 echo ""
 echo "------------------------------------------"
@@ -167,7 +169,7 @@ EOF
 echo "[OK] Config ready"
 
 # ==============================
-# STEP 4 - START POSTGRES ONLY
+# STEP 4 (POSTGRES ONLY)
 # ==============================
 echo ""
 echo "------------------------------------------"
@@ -180,25 +182,21 @@ wait $!
 
 echo "[OK] PostgreSQL container started"
 
-# ==============================
-# WAIT POSTGRES HEALTH (FIX UTAMA)
-# ==============================
 echo "[INFO] Waiting PostgreSQL healthy..."
 
 while true; do
     STATUS=$(docker inspect --format='{{.State.Health.Status}}' n8n-postgres-1 2>/dev/null || echo "starting")
-
     printf "\r[INFO] Postgres status: %-10s" "$STATUS"
 
     [[ "$STATUS" == "healthy" ]] && break
     sleep 2
 done
 
-echo ""
+printf "\r\033[K"
 echo "[OK] PostgreSQL ready"
 
 # ==============================
-# STEP 5 - START ALL
+# STEP 5 (ALL SERVICES)
 # ==============================
 echo ""
 echo "------------------------------------------"
@@ -211,22 +209,22 @@ wait $!
 
 echo "[OK] Containers started"
 
-# ==============================
-# WAIT N8N
-# ==============================
 echo "[INFO] Waiting n8n..."
 
 while true; do
     RUNNING=$(docker ps --format '{{.Names}}' | grep -c n8n || true)
-
     printf "\r[INFO] n8n containers: %d" "$RUNNING"
 
     [[ "$RUNNING" -ge 2 ]] && break
     sleep 2
 done
 
-echo ""
+printf "\r\033[K"
 echo "[OK] n8n running"
+
+echo ""
+echo "[INFO] Container status:"
+docker ps
 
 # ==============================
 # DONE
