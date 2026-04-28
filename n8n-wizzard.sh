@@ -20,25 +20,22 @@ spinner() {
         printf "\r[INFO] %s... %s" "$msg" "${spin:$i:1}"
         sleep 0.2
     done
-
     printf "\r"
 }
 
 # ==============================
-# WAIT APT (REAL CLEAN)
+# WAIT APT (REAL FIX)
 # ==============================
 wait_apt() {
     echo "[INFO] Preparing apt..."
 
     (
-        # tunggu semua proses apt/dpkg selesai
         while pgrep -x apt >/dev/null || \
               pgrep -x apt-get >/dev/null || \
               pgrep -x dpkg >/dev/null; do
             sleep 2
         done
 
-        # pastikan tidak ada lock file aktif
         while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
               fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
               fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
@@ -75,7 +72,7 @@ run_step() {
 }
 
 # ==============================
-# DOCKER INSTALL SAFE (RETRY)
+# DOCKER INSTALL SAFE
 # ==============================
 install_docker_safe() {
     for attempt in 1 2 3; do
@@ -86,7 +83,7 @@ install_docker_safe() {
             return 0
         fi
 
-        echo "[WARN] Install failed, retrying..."
+        echo "[WARN] Install failed, retry..."
         sleep 5
     done
 
@@ -189,6 +186,9 @@ EOF
 
 echo "[OK] Config ready"
 
+# kasih delay biar postgres init stabil
+sleep 5
+
 # ==============================
 # STEP 4
 # ==============================
@@ -203,20 +203,52 @@ wait $!
 
 echo "[OK] Containers created"
 
+# ==============================
+# WAIT POSTGRES (FIX TOTAL)
+# ==============================
 echo "[INFO] Waiting PostgreSQL..."
 
+POSTGRES_CONTAINER=$(docker ps -a --format '{{.Names}}' | grep postgres | head -n1)
+
+HEALTH_OK_COUNT=0
+
 for i in {1..60}; do
-    STATUS=$(docker inspect --format='{{.State.Health.Status}}' \
-        $(docker ps -a --format '{{.Names}}' | grep postgres | head -n1) \
-        2>/dev/null || echo "starting")
+    STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$POSTGRES_CONTAINER" 2>/dev/null || echo "starting")
 
     printf "\r[INFO] Postgres: %-10s" "$STATUS"
 
-    [[ "$STATUS" == "healthy" ]] && break
+    if [[ "$STATUS" == "healthy" ]]; then
+        HEALTH_OK_COUNT=$((HEALTH_OK_COUNT+1))
+    else
+        HEALTH_OK_COUNT=0
+    fi
+
+    [[ $HEALTH_OK_COUNT -ge 3 ]] && break
+
     sleep 2
 done
 
 echo ""
+
+# fallback retry kalau belum stabil
+if [[ $HEALTH_OK_COUNT -lt 3 ]]; then
+    echo "[WARN] PostgreSQL belum stabil, restart..."
+
+    docker restart "$POSTGRES_CONTAINER" >> "$DOCKER_LOG" 2>&1
+    sleep 5
+
+    for i in {1..30}; do
+        STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$POSTGRES_CONTAINER" 2>/dev/null || echo "starting")
+
+        printf "\r[INFO] Retry Postgres: %-10s" "$STATUS"
+
+        [[ "$STATUS" == "healthy" ]] && break
+        sleep 2
+    done
+
+    echo ""
+fi
+
 echo "[OK] PostgreSQL ready"
 
 # ==============================
