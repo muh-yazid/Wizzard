@@ -25,36 +25,30 @@ spinner() {
 }
 
 # ==============================
-# WAIT APT (REAL FIX)
+# WAIT APT (REAL CLEAN)
 # ==============================
 wait_apt() {
     echo "[INFO] Preparing apt..."
 
-    SP='-\|/'
-    i=0
-
-    # delay awal (hindari cloud-init race)
-    for t in {1..15}; do
-        i=$(( (i+1) %4 ))
-        printf "\r[INFO] Waiting system settle... %s (%d/15)" "${SP:$i:1}" "$t"
-        sleep 1
-    done
-
-    # tunggu semua lock hilang
-    while true; do
-        if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-           fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
-           fuser /var/cache/apt/archives/lock >/dev/null 2>&1; then
-
-            i=$(( (i+1) %4 ))
-            printf "\r[INFO] Waiting apt lock... %s" "${SP:$i:1}"
+    (
+        # tunggu semua proses apt/dpkg selesai
+        while pgrep -x apt >/dev/null || \
+              pgrep -x apt-get >/dev/null || \
+              pgrep -x dpkg >/dev/null; do
             sleep 2
-        else
-            break
-        fi
-    done
+        done
 
-    echo ""
+        # pastikan tidak ada lock file aktif
+        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+            sleep 2
+        done
+    ) &
+
+    spinner $! "Waiting apt ready"
+    wait $!
+
     echo "[OK] apt ready"
 }
 
@@ -81,7 +75,7 @@ run_step() {
 }
 
 # ==============================
-# DOCKER INSTALL SAFE
+# DOCKER INSTALL SAFE (RETRY)
 # ==============================
 install_docker_safe() {
     for attempt in 1 2 3; do
@@ -92,11 +86,11 @@ install_docker_safe() {
             return 0
         fi
 
-        echo "[WARN] Install gagal, retry..."
+        echo "[WARN] Install failed, retrying..."
         sleep 5
     done
 
-    echo "[ERROR] Docker install failed after 3 attempts"
+    echo "[ERROR] Docker install failed"
     exit 1
 }
 
@@ -209,7 +203,6 @@ wait $!
 
 echo "[OK] Containers created"
 
-# tunggu postgres sehat
 echo "[INFO] Waiting PostgreSQL..."
 
 for i in {1..60}; do
@@ -217,7 +210,7 @@ for i in {1..60}; do
         $(docker ps -a --format '{{.Names}}' | grep postgres | head -n1) \
         2>/dev/null || echo "starting")
 
-    printf "\r[INFO] Postgres: %-10s (%d/60)" "$STATUS" "$i"
+    printf "\r[INFO] Postgres: %-10s" "$STATUS"
 
     [[ "$STATUS" == "healthy" ]] && break
     sleep 2
@@ -240,7 +233,7 @@ echo "[INFO] Waiting n8n..."
 
 for i in {1..60}; do
     RUNNING=$(docker ps --format '{{.Names}}' | grep -c n8n || true)
-    printf "\r[INFO] n8n: %d (%d/60)" "$RUNNING" "$i"
+    printf "\r[INFO] n8n: %d" "$RUNNING"
 
     [[ "$RUNNING" -ge 2 ]] && break
     sleep 2
