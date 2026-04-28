@@ -1,5 +1,4 @@
 #!/bin/bash
-
 set -e
 
 MAIN_LOG="/var/log/n8n-install.log"
@@ -26,23 +25,36 @@ spinner() {
 }
 
 # ==============================
-# WAIT APT
+# WAIT APT (REAL FIX)
 # ==============================
 wait_apt() {
     echo "[INFO] Preparing apt..."
 
-    (
-        sleep 5
-        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-              fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+    SP='-\|/'
+    i=0
+
+    # delay awal (hindari cloud-init race)
+    for t in {1..15}; do
+        i=$(( (i+1) %4 ))
+        printf "\r[INFO] Waiting system settle... %s (%d/15)" "${SP:$i:1}" "$t"
+        sleep 1
+    done
+
+    # tunggu semua lock hilang
+    while true; do
+        if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+           fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+           fuser /var/cache/apt/archives/lock >/dev/null 2>&1; then
+
+            i=$(( (i+1) %4 ))
+            printf "\r[INFO] Waiting apt lock... %s" "${SP:$i:1}"
             sleep 2
-        done
-    ) &
+        else
+            break
+        fi
+    done
 
-    PID=$!
-    spinner $PID "Waiting apt lock"
-    wait $PID
-
+    echo ""
     echo "[OK] apt ready"
 }
 
@@ -69,6 +81,26 @@ run_step() {
 }
 
 # ==============================
+# DOCKER INSTALL SAFE
+# ==============================
+install_docker_safe() {
+    for attempt in 1 2 3; do
+        echo "[INFO] Installing Docker (attempt $attempt)..."
+
+        if sh get-docker.sh >> "$MAIN_LOG" 2>&1; then
+            echo "[OK] Docker installed"
+            return 0
+        fi
+
+        echo "[WARN] Install gagal, retry..."
+        sleep 5
+    done
+
+    echo "[ERROR] Docker install failed after 3 attempts"
+    exit 1
+}
+
+# ==============================
 # HEADER
 # ==============================
 clear
@@ -79,7 +111,6 @@ echo ""
 
 read -p "Start N8N configuration wizard? (Y/n): " CONFIRM
 CONFIRM=${CONFIRM:-y}
-
 [[ ! "$CONFIRM" =~ ^[Yy]$ ]] && echo "Cancelled." && exit 0
 
 # ==============================
@@ -95,7 +126,8 @@ wait_apt
 echo "[INFO] Download Docker..."
 curl -fsSL https://get.docker.com -o get-docker.sh >> "$MAIN_LOG" 2>&1
 
-run_step "Installing Docker" sh get-docker.sh
+install_docker_safe
+
 run_step "Starting Docker" bash -c "systemctl start docker || service docker start || true"
 
 echo "[OK] Docker ready"
@@ -172,24 +204,18 @@ echo "[STEP 4/5] Starting containers"
 echo "------------------------------------------"
 
 docker compose up -d >> "$DOCKER_LOG" 2>&1 &
-PID=$!
-spinner $PID "Deploying containers"
-wait $PID
+spinner $! "Deploying containers"
+wait $!
 
 echo "[OK] Containers created"
 
-# WAIT postgres (safe)
-POSTGRES_CONTAINER=""
-for i in {1..10}; do
-    POSTGRES_CONTAINER=$(docker ps -a --format '{{.Names}}' | grep postgres | head -n1)
-    [[ -n "$POSTGRES_CONTAINER" ]] && break
-    sleep 2
-done
-
+# tunggu postgres sehat
 echo "[INFO] Waiting PostgreSQL..."
 
 for i in {1..60}; do
-    STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$POSTGRES_CONTAINER" 2>/dev/null || echo "starting")
+    STATUS=$(docker inspect --format='{{.State.Health.Status}}' \
+        $(docker ps -a --format '{{.Names}}' | grep postgres | head -n1) \
+        2>/dev/null || echo "starting")
 
     printf "\r[INFO] Postgres: %-10s (%d/60)" "$STATUS" "$i"
 
@@ -210,12 +236,13 @@ echo "------------------------------------------"
 
 docker compose up -d >> "$DOCKER_LOG" 2>&1
 
+echo "[INFO] Waiting n8n..."
+
 for i in {1..60}; do
-    RUNNING=$(docker ps --filter "status=running" --format '{{.Names}}' | grep -c n8n || true)
+    RUNNING=$(docker ps --format '{{.Names}}' | grep -c n8n || true)
+    printf "\r[INFO] n8n: %d (%d/60)" "$RUNNING" "$i"
 
-    printf "\r[INFO] n8n running: %d (%d/60)" "$RUNNING" "$i"
-
-    [[ "$RUNNING" -ge 1 ]] && break
+    [[ "$RUNNING" -ge 2 ]] && break
     sleep 2
 done
 
