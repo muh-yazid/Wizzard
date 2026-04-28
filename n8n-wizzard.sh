@@ -1,5 +1,4 @@
 #!/bin/bash
-
 set -e
 
 MAIN_LOG="/var/log/n8n-install.log"
@@ -8,24 +7,24 @@ DOCKER_LOG="/var/log/n8n-docker.log"
 exec > >(tee -a "$MAIN_LOG") 2>&1
 
 # ==============================
-# SPINNER (CLEAN)
+# CLEAN SPINNER (NO BUG)
 # ==============================
 spinner() {
     local pid=$1
     local msg="$2"
-    local spin='|/-_'
+    local spin='-\|/'
     local i=0
 
-    tput civis 2>/dev/null
+    tput civis 2>/dev/null || true
 
     while kill -0 $pid 2>/dev/null; do
         i=$(( (i+1) %4 ))
-        printf "\r\033[K[INFO] %s... %c" "$msg" "${spin:$i:1}"
-        sleep 0.15
+        printf "\r[INFO] %s... %s" "$msg" "${spin:$i:1}"
+        sleep 0.2
     done
 
-    printf "\r\033[K"
-    tput cnorm 2>/dev/null
+    printf "\r"
+    tput cnorm 2>/dev/null || true
 }
 
 # ==============================
@@ -42,8 +41,8 @@ run_step() {
     wait $PID
 
     if [ $? -ne 0 ]; then
-        echo "[ERROR] $MSG failed!"
-        echo "[INFO] Check log: $MAIN_LOG"
+        echo "[ERROR] $MSG gagal!"
+        echo "[INFO] Cek log: $MAIN_LOG"
         exit 1
     fi
 
@@ -51,69 +50,67 @@ run_step() {
 }
 
 # ==============================
+# HARD FIX APT LOCK (ANTI RACE)
+# ==============================
+fix_apt_lock() {
+    echo "[INFO] Preparing apt (anti race)..."
+
+    # stop auto apt
+    systemctl stop apt-daily.service 2>/dev/null || true
+    systemctl stop apt-daily-upgrade.service 2>/dev/null || true
+    systemctl kill --kill-who=all apt-daily.service 2>/dev/null || true
+    systemctl kill --kill-who=all apt-daily-upgrade.service 2>/dev/null || true
+
+    (
+        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+            sleep 2
+        done
+    ) &
+
+    spinner $! "Waiting apt lock"
+
+    # fix dpkg jika nyangkut
+    dpkg --configure -a >> "$MAIN_LOG" 2>&1 || true
+
+    echo "[OK] apt ready"
+}
+
+# ==============================
 # HEADER
 # ==============================
 clear
-echo "=========================================="
-echo "         N8N INSTALLER WIZARD"
-echo "=========================================="
+echo "============================================"
+echo "        N8N INSTALLER WIZARD"
+echo "============================================"
 echo ""
 
 read -p "Start N8N configuration wizard? (Y/n): " CONFIRM
 CONFIRM=${CONFIRM:-y}
-
-[[ ! "$CONFIRM" =~ ^[Yy]$ ]] && echo "Cancelled." && exit 0
+[[ ! "$CONFIRM" =~ ^[Yy]$ ]] && exit 0
 
 # ==============================
-# STEP 1 - SYSTEM (ANTI APT RACE)
+# STEP 1 - SYSTEM
 # ==============================
 echo ""
-echo "------------------------------------------"
+echo "--------------------------------------------"
 echo "[STEP 1/5] Prepare system"
-echo "------------------------------------------"
+echo "--------------------------------------------"
 
-echo "[INFO] Preparing apt (anti race)..."
+fix_apt_lock
 
-# STOP auto apt services (penyebab lock)
-systemctl stop apt-daily.service 2>/dev/null || true
-systemctl stop apt-daily-upgrade.service 2>/dev/null || true
-systemctl kill --kill-who=all apt-daily.service 2>/dev/null || true
-systemctl kill --kill-who=all apt-daily-upgrade.service 2>/dev/null || true
-
-# WAIT lock hilang
-(
-    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-          fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
-        sleep 1
-    done
-) &
-spinner $! "Waiting apt lock"
-wait $!
-
-# FIX dpkg kalau sempat broken
-dpkg --configure -a >> "$MAIN_LOG" 2>&1 || true
-
-echo "[OK] apt ready"
-
-# INSTALL DOCKER
 echo "[INFO] Download Docker..."
 curl -fsSL https://get.docker.com -o get-docker.sh >> "$MAIN_LOG" 2>&1
 
-echo "[INFO] Installing Docker..."
-
-(
-    sh get-docker.sh >> "$MAIN_LOG" 2>&1
-) &
-spinner $! "Installing Docker"
-wait $!
-
-if [ $? -ne 0 ]; then
-    echo "[WARNING] Docker install retry..."
-    sleep 5
-    sh get-docker.sh >> "$MAIN_LOG" 2>&1
-fi
-
-echo "[OK] Docker installed"
+# retry install docker (anti gagal karena apt)
+for i in 1 2 3; do
+    if run_step "Installing Docker (attempt $i)" sh get-docker.sh; then
+        break
+    fi
+    echo "[WARN] Retry install Docker..."
+    sleep 3
+done
 
 run_step "Starting Docker" bash -c "systemctl start docker || service docker start || true"
 
@@ -123,9 +120,9 @@ echo "[OK] Docker ready"
 # STEP 2 - INPUT
 # ==============================
 echo ""
-echo "------------------------------------------"
-echo "[STEP 2/5] Configuration setup"
-echo "------------------------------------------"
+echo "--------------------------------------------"
+echo "[STEP 2/5] Configuration"
+echo "--------------------------------------------"
 echo ""
 
 read -p "Domain: " DOMAIN
@@ -154,12 +151,12 @@ RUNNERS_AUTH_TOKEN=$(openssl rand -hex 16)
 INSTALL_DIR="/opt/n8n"
 
 # ==============================
-# STEP 3 - ENV
+# STEP 3 - PREPARE
 # ==============================
 echo ""
-echo "------------------------------------------"
+echo "--------------------------------------------"
 echo "[STEP 3/5] Prepare environment"
-echo "------------------------------------------"
+echo "--------------------------------------------"
 
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
@@ -182,59 +179,63 @@ EOF
 echo "[OK] Config ready"
 
 # ==============================
-# STEP 4 - POSTGRES FIRST
+# STEP 4 - DEPLOY
 # ==============================
 echo ""
-echo "------------------------------------------"
-echo "[STEP 4/5] Start PostgreSQL"
-echo "------------------------------------------"
+echo "--------------------------------------------"
+echo "[STEP 4/5] Starting containers"
+echo "--------------------------------------------"
 
-docker compose up -d postgres >> "$DOCKER_LOG" 2>&1 &
-spinner $! "Starting PostgreSQL"
+docker compose up -d >> "$DOCKER_LOG" 2>&1 &
+spinner $! "Deploying containers"
 wait $!
 
-echo "[OK] PostgreSQL container started"
+echo "[OK] Containers created"
 
-echo "[INFO] Waiting PostgreSQL healthy..."
+# ==============================
+# WAIT POSTGRES (FIX UNHEALTHY)
+# ==============================
+echo "[INFO] Waiting PostgreSQL..."
 
-while true; do
-    STATUS=$(docker inspect --format='{{.State.Health.Status}}' n8n-postgres-1 2>/dev/null || echo "starting")
+for i in {1..60}; do
+    STATUS=$(docker inspect --format='{{.State.Health.Status}}' \
+        $(docker ps -a --format '{{.Names}}' | grep postgres | head -n1) \
+        2>/dev/null || echo "starting")
 
-    printf "\r\033[K[INFO] Postgres status: %-10s" "$STATUS"
+    printf "\r[INFO] Postgres: %-10s (%d/60)" "$STATUS" "$i"
 
-    [[ "$STATUS" == "healthy" ]] && break
+    if [[ "$STATUS" == "healthy" ]]; then
+        break
+    fi
+
     sleep 2
 done
 
-printf "\r\033[K"
+echo ""
 echo "[OK] PostgreSQL ready"
 
 # ==============================
-# STEP 5 - ALL SERVICES
+# STEP 5 - FINAL
 # ==============================
 echo ""
-echo "------------------------------------------"
-echo "[STEP 5/5] Starting N8N"
-echo "------------------------------------------"
+echo "--------------------------------------------"
+echo "[STEP 5/5] Finalizing"
+echo "--------------------------------------------"
 
-docker compose up -d >> "$DOCKER_LOG" 2>&1 &
-spinner $! "Starting n8n services"
-wait $!
-
-echo "[OK] Containers started"
+docker compose up -d >> "$DOCKER_LOG" 2>&1
 
 echo "[INFO] Waiting n8n..."
 
-while true; do
+for i in {1..60}; do
     RUNNING=$(docker ps --format '{{.Names}}' | grep -c n8n || true)
 
-    printf "\r\033[K[INFO] n8n containers: %d" "$RUNNING"
+    printf "\r[INFO] n8n: %d (%d/60)" "$RUNNING" "$i"
 
     [[ "$RUNNING" -ge 2 ]] && break
     sleep 2
 done
 
-printf "\r\033[K"
+echo ""
 echo "[OK] n8n running"
 
 echo ""
