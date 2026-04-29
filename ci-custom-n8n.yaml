@@ -24,7 +24,6 @@ write_files:
       echo ""
 
       echo "[INFO] Menjalankan installer..."
-      echo ""
 
       # 🚨 BLOCKING (WAJIB)
       bash /root/setup-vm.sh
@@ -36,17 +35,16 @@ write_files:
           return
       fi
 
-      echo ""
-      echo "[INFO] Verifikasi service n8n..."
-
       for i in {1..60}; do
           RUNNING=$(docker ps --format '{{.Names}}' | grep -c n8n || true)
 
           if [ "$RUNNING" -ge 1 ]; then
+              echo ""
               echo "[OK] n8n sudah running"
               break
           fi
 
+          echo ""
           echo "[WAIT] n8n belum ready ($i/60)"
           sleep 2
       done
