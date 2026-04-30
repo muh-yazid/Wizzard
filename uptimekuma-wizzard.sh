@@ -130,7 +130,6 @@ echo ""
 echo -e "${YELLOW}--------------------------------------------${NC}"
 echo -e "${YELLOW}[STEP 2/4] Configuration${NC}"
 echo -e "${YELLOW}--------------------------------------------${NC}"
-echo ""
 
 read -p "Uptime Kuma Port (default 3001): " UPTIME_KUMA_PORT
 UPTIME_KUMA_PORT=${UPTIME_KUMA_PORT:-3001}
