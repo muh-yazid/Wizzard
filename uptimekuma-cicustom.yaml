@@ -1,0 +1,66 @@
+#cloud-config
+package_update: false
+package_upgrade: false
+
+write_files:
+  - path: /root/setup-vm.sh
+    permissions: '0755'
+    encoding: b64
+    content: |
+      BASE64_ENCODE
+
+  - path: /etc/profile.d/uptime-kuma-first-login.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+
+      [ "$USER" != "root" ] && return
+      [ -f /root/.uptime-kuma_installed ] && return
+
+      clear
+      echo "======================================"
+      echo "  UPTIME KUMA FIRST LOGIN INSTALLER"
+      echo "======================================"
+      echo ""
+
+      echo "[INFO] Menjalankan installer..."
+
+      # 🚨 BLOCKING (WAJIB)
+      bash /root/setup-vm.sh
+      STATUS=$?
+
+      if [ $STATUS -ne 0 ]; then
+          echo "[ERROR] Installer gagal!"
+          echo "[INFO] Cek log di /var/log/"
+          return
+      fi
+
+      for i in {1..60}; do
+          RUNNING=$(docker ps --format '{{.Names}}' | grep -c uptime-kuma || true)
+
+          if [ "$RUNNING" -ge 1 ]; then
+              echo ""
+              echo "[OK] uptime-kuma sudah running"
+              break
+          fi
+
+          echo ""
+          echo "[WAIT] uptime-kuma belum ready ($i/60)"
+          sleep 2
+      done
+
+      if ! ss -lnt | grep -q ":3001"; then
+          echo "[WARNING] Port 3001 belum terbuka!"
+          return
+      fi
+
+      # ✅ MARK DONE (SETELAH BENAR2 SELESAI)
+      touch /root/.uptime-kuma_installed
+
+      # ✅ CLEANUP DI AKHIR (INI YANG SEBELUMNYA SALAH POSISI)
+      rm -f /root/setup-vm.sh
+      rm -f /root/get-docker.sh
+      rm -f /root/uptime-kuma-installer.sh
+
+      echo ""
+      echo "[INFO] Installation uptime-kuma finished"
