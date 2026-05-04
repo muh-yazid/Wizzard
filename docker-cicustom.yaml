@@ -7,7 +7,7 @@ write_files:
     permissions: '0755'
     encoding: b64
     content: |
-      BASE64-ENCODE
+      BASE64_CODE_DOCKER-SETUP.SH
 
   - path: /etc/profile.d/docker-first-login.sh
     permissions: '0755'
