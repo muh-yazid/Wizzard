@@ -7,7 +7,7 @@ write_files:
     permissions: '0755'
     encoding: b64
     content: |
-      BASE64_ENCODE
+      BASE64_CODE_UPTIMEKUMA-SETUP.SH
 
   - path: /etc/profile.d/uptime-kuma-first-login.sh
     permissions: '0755'
