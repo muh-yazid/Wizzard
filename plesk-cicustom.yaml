@@ -1,0 +1,93 @@
+#cloud-config
+package_update: false
+package_upgrade: false
+
+write_files:
+  # =========================
+  # MAIN INSTALL SCRIPT (BASE64)
+  # =========================
+  - path: /root/setup-vm.sh
+    permissions: '0755'
+    encoding: b64
+    content: |
+      BASE64_CODE_PLESK-SETUP.SH
+
+  # =========================
+  # FIRST LOGIN TRIGGER
+  # =========================
+  - path: /etc/profile.d/plesk-first-login.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+
+      # =========================
+      # ONLY ROOT + INTERACTIVE
+      # =========================
+      [ "$USER" != "root" ] && return
+      [[ $- != *i* ]] && return
+
+      # =========================
+      # PREVENT RE-RUN
+      # =========================
+      if [ -f /root/.plesk_installed ]; then
+          return
+      fi
+
+      clear
+      echo "======================================"
+      echo "   PLESK FIRST LOGIN INSTALLER"
+      echo "======================================"
+      echo ""
+      echo "[INFO] Menjalankan installer..."
+      echo ""
+
+      # =========================
+      # RUN INSTALLER
+      # =========================
+      bash /root/setup-vm.sh
+      STATUS=$?
+
+      if [ $STATUS -ne 0 ]; then
+          echo "[ERROR] Installer gagal!"
+          return
+      fi
+
+      # =========================
+      # WAIT PANEL READY (PLESK)
+      # =========================
+      echo ""
+      echo "[INFO] Verifikasi service Plesk..."
+
+      for i in {1..60}; do
+          if systemctl is-active psa.service >/dev/null 2>&1; then
+            echo "[OK] Plesk service sudah running"
+            break
+          fi
+          echo "[WAIT] Plesk belum ready ($i/60)"
+          sleep 2
+      done
+
+      # =========================
+      # CHECK PORT
+      # =========================
+      PANEL_PORT="8443"
+
+      if ss -lnt | grep -q ":$PANEL_PORT"; then
+          echo "[OK] Port $PANEL_PORT sudah terbuka"
+      else
+          echo "[WARNING] Port $PANEL_PORT belum terbuka!"
+      fi
+
+      # =========================
+      # MARK AS DONE
+      # =========================
+      touch /root/.plesk_installed
+
+      # =========================
+      # SELF DESTRUCT 🔥
+      # =========================
+      rm -f /etc/profile.d/plesk-first-login.sh
+      rm -f /root/setup-vm.sh
+
+      echo ""
+      echo "[INFO] Installation plesk finished"
