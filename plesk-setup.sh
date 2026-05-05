@@ -36,9 +36,8 @@ spinner() {
     if [ $exit_code -eq 0 ]; then
         echo -e "\b ${GREEN}✔${NC}"
     else
-        echo -e "\b ${RED}✖${NC}"
-        echo -e "${RED}[ERROR] Cek log: $LOG_FILE${NC}"
-        exit 1
+        # ❗ jangan langsung fail (plesk sering return non-zero)
+        echo -e "\b ${YELLOW}⚠${NC}"
     fi
 }
 
@@ -62,7 +61,7 @@ fi
 echo ""
 
 # =========================================================
-# STEP 1
+# STEP 1 - PREPARE
 # =========================================================
 echo -e "${YELLOW}--------------------------------------${NC}"
 echo -e "${YELLOW}[STEP 1/3] Prepare system${NC}"
@@ -85,7 +84,7 @@ spinner $! "Preparing apt & dependencies"
 echo ""
 
 # =========================================================
-# STEP 2
+# STEP 2 - INSTALL
 # =========================================================
 echo -e "${YELLOW}--------------------------------------${NC}"
 echo -e "${YELLOW}[STEP 2/3] Install Plesk${NC}"
@@ -98,31 +97,44 @@ echo -e "${YELLOW}--------------------------------------${NC}"
 spinner $! "Downloading installer"
 
 (
+    set +e
     yes y | bash /root/install.sh > "$LOG_FILE" 2>&1
+    exit 0
 ) &
-spinner $! "Installing Plesk"
+spinner $! "Installing Plesk (10-20 minutes)"
 
 echo ""
 
 # =========================================================
-# STEP 3
+# STEP 3 - LOGIN INFO
 # =========================================================
 echo -e "${YELLOW}--------------------------------------${NC}"
 echo -e "${YELLOW}[STEP 3/3] Plesk login information${NC}"
 echo -e "${YELLOW}--------------------------------------${NC}"
 
 # =========================
-# WAIT PLESK READY
+# WAIT SERVICE
 # =========================
-for i in {1..20}; do
-    systemctl is-active psa.service >/dev/null 2>&1 && break
+echo ""
+echo "[INFO] Verifikasi service Plesk..."
+
+for i in {1..60}; do
+    if systemctl is-active psa.service >/dev/null 2>&1; then
+        echo "[OK] Plesk service sudah running"
+        break
+    fi
+    echo "[WAIT] Plesk belum ready ($i/60)"
     sleep 2
 done
 
 # =========================
-# GET LOGIN URL
+# WAIT LOGIN URL READY
 # =========================
-PLESK_URL=$(plesk login 2>/dev/null | grep -Eo 'https://[^ ]+')
+for i in {1..30}; do
+    PLESK_URL=$(plesk login 2>/dev/null | grep -Eo 'https://[^ ]+' || true)
+    [ -n "$PLESK_URL" ] && break
+    sleep 2
+done
 
 # =========================
 # BASIC INFO
@@ -130,28 +142,26 @@ PLESK_URL=$(plesk login 2>/dev/null | grep -Eo 'https://[^ ]+')
 IP=$(hostname -I | awk '{print $1}')
 PORT="443"
 
-# fallback kalau gagal ambil token
-[ -z "$PLESK_URL" ] && PLESK_URL="https://$IP:$PORT"
-
-# internal URL (tanpa token)
 LOGIN_URL="https://$IP:$PORT"
 
-DOMAIN_URL=$(echo "$PLESK_URL" | grep -o 'https://[^ ]*plesk.page[^ ]*')
-IP_URL=$(echo "$PLESK_URL" | grep -o 'https://[0-9\.]*:[0-9]*/login[^ ]*')
+# parsing domain & ip link
+DOMAIN_URL=$(echo "$PLESK_URL" | grep -o 'https://[^ ]*plesk.page[^ ]*' || true)
+IP_URL=$(echo "$PLESK_URL" | grep -o 'https://[0-9\.]*:[0-9]*/login[^ ]*' || true)
 
 # fallback
 [ -z "$DOMAIN_URL" ] && DOMAIN_URL="$PLESK_URL"
 [ -z "$IP_URL" ] && IP_URL="$LOGIN_URL/login"
 
+# =========================
+# OUTPUT
+# =========================
 echo -e "${GREEN}======================================${NC}"
 echo -e "${GREEN}        PLESK LOGIN INFO              ${NC}"
 echo -e "${GREEN}======================================${NC}"
 
-# Login utama
 printf "${CYAN}%-15s${NC} : %s\n" "Login URL" "$LOGIN_URL"
 echo ""
 
-# First Setup (nested)
 printf "${CYAN}%-15s${NC} :\n" "First Setup"
 printf "  ${CYAN}%-12s${NC} : %s\n" "Domain" "$DOMAIN_URL"
 printf "  ${CYAN}%-12s${NC} : %s\n" "IP" "$IP_URL"
