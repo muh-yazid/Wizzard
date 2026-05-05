@@ -149,6 +149,7 @@ echo -e "${GREEN}======================================${NC}"
 
 # Login utama
 printf "${CYAN}%-15s${NC} : %s\n" "Login URL" "$LOGIN_URL"
+echo ""
 
 # First Setup (nested)
 printf "${CYAN}%-15s${NC} :\n" "First Setup"
