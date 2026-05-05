@@ -128,22 +128,32 @@ PLESK_URL=$(plesk login 2>/dev/null | grep -Eo 'https://[^ ]+')
 # BASIC INFO
 # =========================
 IP=$(hostname -I | awk '{print $1}')
-PORT="8443"
+PORT="443"
 
 # fallback kalau gagal ambil token
 [ -z "$PLESK_URL" ] && PLESK_URL="https://$IP:$PORT"
 
 # internal URL (tanpa token)
-INTERNAL_URL="https://$IP:$PORT"
+LOGIN_URL="https://$IP:$PORT"
+
+DOMAIN_URL=$(echo "$PLESK_URL" | grep -o 'https://[^ ]*plesk.page[^ ]*')
+IP_URL=$(echo "$PLESK_URL" | grep -o 'https://[0-9\.]*:[0-9]*/login[^ ]*')
+
+# fallback
+[ -z "$DOMAIN_URL" ] && DOMAIN_URL="$PLESK_URL"
+[ -z "$IP_URL" ] && IP_URL="$LOGIN_URL/login"
 
 echo -e "${GREEN}======================================${NC}"
 echo -e "${GREEN}        PLESK LOGIN INFO              ${NC}"
 echo -e "${GREEN}======================================${NC}"
 
-printf "${CYAN}%-15s${NC} : %s\n" "First Setup URL" "$PLESK_URL"
-printf "${CYAN}%-15s${NC} : %s\n" "Login URL" "$INTERNAL_URL"
-printf "${CYAN}%-15s${NC} : %s\n" "Username" "admin"
-printf "${CYAN}%-15s${NC} : %s\n" "Login Cmd" "plesk login"
+# Login utama
+printf "${CYAN}%-15s${NC} : %s\n" "Login URL" "$LOGIN_URL"
+
+# First Setup (nested)
+printf "${CYAN}%-15s${NC} :\n" "First Setup"
+printf "  ${CYAN}%-12s${NC} : %s\n" "Domain" "$DOMAIN_URL"
+printf "  ${CYAN}%-12s${NC} : %s\n" "IP" "$IP_URL"
 
 echo -e "${GREEN}======================================${NC}"
 
