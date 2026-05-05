@@ -60,7 +60,6 @@ write_files:
       # ✅ CLEANUP DI AKHIR (INI YANG SEBELUMNYA SALAH POSISI)
       rm -f /root/setup-vm.sh
       rm -f /root/get-docker.sh
-      rm -f /root/n8n-installer.sh
-
+      
       echo ""
       echo "[INFO] Installation N8N finished"
