@@ -54,6 +54,7 @@ echo ""
 read -p "Start Hestia installation wizard? (Y/n): " CONFIRM
 CONFIRM=${CONFIRM:-Y}
 [[ ! "$CONFIRM" =~ ^[Yy]$ ]] && exit 0
+echo ""
 
 # =========================================================
 # STEP 1
