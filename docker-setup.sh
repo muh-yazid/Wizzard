@@ -94,13 +94,18 @@ echo -e "${YELLOW}--------------------------------------${NC}"
 echo -e "${YELLOW}[STEP 2/3] Install Docker${NC}"
 echo -e "${YELLOW}--------------------------------------${NC}"
 
-(
-    curl -fsSL https://get.docker.com -o /root/get-docker.sh
-    sh /root/get-docker.sh > "$LOG_FILE" 2>&1
-) &
+echo -e "${CYAN}[INFO]${NC} Download Docker..."
+curl -fsSL https://get.docker.com -o get-docker.sh >> "$MAIN_LOG" 2>&1
 
-spinner $! "Installing Docker (2-5 minutes)"
+for i in 1 2 3; do
+    if run_step "Installing Docker (attempt $i)" sh get-docker.sh; then
+        break
+    fi
+    echo -e "${YELLOW}[WARN]${NC} Retry install Docker..."
+    sleep 3
+done
 
+run_step "Starting Docker" bash -c "systemctl start docker || service docker start || true"
 echo ""
 
 # =========================================================
