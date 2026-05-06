@@ -139,10 +139,26 @@ while true; do
 done
 
 # =========================
-# DOMAIN
+# DOMAIN (FQDN VALIDATION)
 # =========================
-read -p "Domain ($HOSTNAME_DEFAULT) : " FQDN
-FQDN=${FQDN:-$HOSTNAME_DEFAULT}
+while true; do
+    read -p "FQDN ($HOSTNAME_DEFAULT) : " FQDN
+    FQDN=${FQDN:-$HOSTNAME_DEFAULT}
+
+    # harus format hostname.domain.tld
+    if [[ ! "$FQDN" =~ ^([a-zA-Z0-9](-?[a-zA-Z0-9])*\.)+[a-zA-Z]{2,}$ ]]; then
+        echo -e "${RED}[ERROR] Format domain tidak valid! contoh: panel.domain.com${NC}"
+        continue
+    fi
+
+    # wajib ada subdomain (minimal 3 bagian: a.b.c)
+    if [[ $(echo "$FQDN" | tr -cd '.' | wc -c) -lt 2 ]]; then
+        echo -e "${RED}[ERROR] Harus pakai subdomain! contoh: panel.domain.com${NC}"
+        continue
+    fi
+
+    break
+done
 
 # =========================
 # PORT
